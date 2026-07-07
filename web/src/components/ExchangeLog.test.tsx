@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { ExchangeLog, type ExchangeEntry } from "./ExchangeLog";
-import { formatBackoff, truncateMiddle } from "./format";
+import { formatBackoff } from "./format";
 
 afterEach(() => {
   cleanup();
@@ -44,7 +44,7 @@ describe("ExchangeLog", () => {
     expect(limited.className).toContain("text-status-fail");
   });
 
-  it("shows the full path on hover title and copies the untruncated path", () => {
+  it("shows the full path inline, on hover title, and copies it", () => {
     const writeText = vi.fn();
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -67,7 +67,7 @@ describe("ExchangeLog", () => {
       />,
     );
 
-    expect(screen.getByText(truncateMiddle(path))).toBeTruthy();
+    expect(screen.getByText(path)).toBeTruthy();
     expect(screen.getAllByTitle(path).length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByRole("button", { name: `Copy path: ${path}` }));
@@ -111,12 +111,4 @@ describe("format helpers", () => {
     expect(formatBackoff(2000)).toBe("2s");
   });
 
-  it("middle-truncates long paths", () => {
-    const long = "/v1/charges/chg_0123456789abcdef0123456789abcdef";
-    const short = truncateMiddle(long, 24);
-    expect(short.length).toBe(24);
-    expect(short).toContain("…");
-    expect(short.startsWith("/v1/charges/")).toBe(true);
-    expect(truncateMiddle("/v1/charges", 24)).toBe("/v1/charges");
-  });
 });

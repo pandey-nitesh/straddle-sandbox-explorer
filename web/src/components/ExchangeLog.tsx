@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { CopyValueButton } from "./CopyValueButton";
 import { JsonBlock } from "./JsonBlock";
-import { formatBackoff, truncateMiddle } from "./format";
+import { formatBackoff } from "./format";
 
 /**
  * Wire log (design §6.3): chronological redacted exchanges for the selected
@@ -70,10 +70,10 @@ function Exchange({ entry }: { entry: ExchangeEntry }) {
             {entry.method}
           </span>
           <span
-            className="wire-quote min-w-0 flex-1 truncate text-fg-secondary"
+            className="wire-quote min-w-0 flex-1 break-words text-fg-secondary"
             title={entry.path}
           >
-            {truncateMiddle(entry.path)}
+            {entry.path}
           </span>
           <StatusCodeChip status={entry.status} />
           <span className="wire-quote shrink-0 text-xs text-fg-muted">

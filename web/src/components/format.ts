@@ -31,15 +31,3 @@ export function formatBackoff(ms: number): string {
   const rounded = Math.round(seconds * 10) / 10;
   return `${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)}s`;
 }
-
-/**
- * Middle-truncate a path (design §6.3: method + path truncated middle).
- * `/v1/charges/chg_0123456789abcdef` → `/v1/charges/ch…cdef`-style.
- */
-export function truncateMiddle(text: string, max = 40): string {
-  if (text.length <= max) return text;
-  const keep = max - 1; // one slot for the ellipsis
-  const head = Math.ceil(keep / 2);
-  const tail = keep - head;
-  return `${text.slice(0, head)}…${text.slice(text.length - tail)}`;
-}
