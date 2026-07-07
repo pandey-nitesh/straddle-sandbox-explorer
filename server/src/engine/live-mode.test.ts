@@ -20,9 +20,21 @@ describe("scenario C live mode (spec §18.1)", () => {
       { kind: "terminal_status", status: "failed", returnCode: "R01" },
     ]);
     expect(live?.outcomes.charge).toBe("reversed_insufficient_funds");
-    for (const id of ["a", "b", "d", "e"] as const) {
+    for (const id of ["a", "b", "e"] as const) {
       expect(getScenario(id, "live")).toBe(getScenario(id, "contract"));
     }
+  });
+
+  it("selects the watchtower deviation def for D in live mode (spec §18.9)", () => {
+    const contract = getScenario("d", "contract");
+    const live = getScenario("d", "live");
+    expect(contract?.requiredObservations).toEqual([
+      { kind: "terminal_status", status: "cancelled", requireReasonDetail: true },
+    ]);
+    expect(live?.requiredObservations).toEqual([
+      { kind: "terminal_status", status: "failed", requireReasonDetail: true },
+    ]);
+    expect(live?.outcomes.charge).toBe("cancelled_for_fraud_risk");
   });
 
   it("passes live-mode C against the observed live sandbox shape", async () => {

@@ -83,12 +83,13 @@ export const RUNNABLE_SCENARIOS = [
 export const RUNNABLE_SCENARIO_IDS = RUNNABLE_SCENARIOS.map((s) => s.id);
 
 /**
- * Spec §18.1: the live sandbox never surfaces paid/reversed on reversed_*
- * outcomes, so Scenario C has two variants. "contract" keeps the PRD's
- * ordered paid→reversed observation (mock/replay demos); "live" asserts the
- * documented deviation evidence — terminal `failed` carrying the reversal's
- * R-code, with the ~4-minute reversal-window delay visible in the recorded
- * transition timestamps.
+ * Spec §18.1/§18.8: the live sandbox never surfaces `reversed` (C) or
+ * `cancelled` (D) — those PRD terminals exist only in the mock/replay
+ * "contract" mode. "live" mode swaps C and D for defs asserting the
+ * documented deviation evidence: C = terminal `failed` + the reversal's
+ * R-code (the ~4-minute reversal window stays visible in transition
+ * timestamps); D = terminal `failed` + watchtower's structured reason
+ * detail (`payment_blocked`, ~7 s).
  */
 export type ScenarioMode = "contract" | "live";
 
@@ -107,6 +108,21 @@ const SCENARIO_C_LIVE = ScenarioDefSchema.parse({
   ],
 }) as RunnableScenarioDef;
 
+const SCENARIO_D_LIVE = ScenarioDefSchema.parse({
+  id: "d",
+  label: "D. Risk cancellation",
+  purpose:
+    "Live deviation evidence: watchtower blocks the charge as failed with structured reason detail (spec §18.8).",
+  outcomes: {
+    customer: "verified",
+    paykey: "active",
+    charge: "cancelled_for_fraud_risk",
+  },
+  requiredObservations: [
+    { kind: "terminal_status", status: "failed", requireReasonDetail: true },
+  ],
+}) as RunnableScenarioDef;
+
 const scenarioMap = new Map<RunnableScenarioId, RunnableScenarioDef>(
   RUNNABLE_SCENARIOS.map((scenario) => [
     scenario.id,
@@ -119,6 +135,7 @@ export function getScenario(
   mode: ScenarioMode = "contract",
 ): RunnableScenarioDef | undefined {
   if (id === "c" && mode === "live") return SCENARIO_C_LIVE;
+  if (id === "d" && mode === "live") return SCENARIO_D_LIVE;
   return scenarioMap.get(id as RunnableScenarioId);
 }
 

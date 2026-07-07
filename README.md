@@ -27,6 +27,8 @@ Live-sandbox findings from the M0 spike that contradict the original spec assump
 - **Customer review settles synchronously** in the 201 create response — no polling for customers.
 - **The invalid-key 401 has an empty body** — the invalid-key screen renders the status line, not a verbatim error body.
 - **Sandbox state is mutable:** an R05 dispute return permanently blocks the paykey and the seeded bank account `123456789` for new paykeys; `SEEDED_BANK` carries the spare `987654321` (preferred) and scenarios avoid `*_customer_dispute` outcomes.
+- **No sandbox path yields a `cancelled` charge status.** `cancelled_for_fraud_risk` watchtower-fails in ~7 s as `failed` with structured reason detail (`payment_blocked`); `cancelled_for_balance_check` stayed `pending` indefinitely in probing. Live Scenario D asserts the watchtower deviation evidence; mock/replay D keeps the `cancelled` + reason contract (spec §18.8).
+- **`Idempotency-Key` values over ~40 chars are rejected** (400, undocumented cap) — the engine sends UUIDs (spec §18.9).
 - **`config.balance_check` is required on charge creation** and pinned to `"disabled"` in scenario definitions.
 - **No `Retry-After`/`X-RateLimit-*` headers observed** — retries honor `Retry-After` if present but never depend on it.
 - Error envelopes live under a top-level `error` key; validation failures arrive in two shapes (400 PascalCase refs / 422 lowercase refs); resource timestamps vary in precision, so shared schemas validate datetimes leniently.
