@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import {
   SEEDED_BANK,
@@ -216,7 +216,9 @@ async function captureExpectedRefusal(
       account_type: "checking",
       config: { sandbox_outcome: "active" },
       external_id: runId,
-      idempotencyKey: `${runId}-paykey-refusal`,
+      // UUID, not a run-id-derived string: the sandbox rejects Idempotency-Key
+      // values over ~40 chars with a 400 that would mask the expected 422.
+      idempotencyKey: randomUUID(),
     });
     evidence.diagnostics.push("expected create_paykey refusal, but the call succeeded");
   } catch (error) {
@@ -328,8 +330,13 @@ function completeRun(
     result: result.passed ? "passed" : "failed",
     duration_ms: Math.max(0, args.clock.now() - startedAt),
     recording_path: recordingPathFor(args.recordingDir, args.run_id),
+    ...(evidence.diagnostics.length > 0
+      ? { diagnostics: [...evidence.diagnostics] }
+      : {}),
   });
 }
+
+const TERMINAL_CHARGE_STATUSES = new Set(["paid", "failed", "reversed", "cancelled"]);
 
 function isChargeSettled(
   scenario: RunnableScenarioDef,
@@ -337,11 +344,15 @@ function isChargeSettled(
   transitions: StatusTransition[],
 ): boolean {
   if (scenario.id === "c") {
-    return transitions.some((t) => t.to === "reversed") || charge.status === "failed";
+    // paid is provisional for C — keep watching for the reversal.
+    return (
+      transitions.some((t) => t.to === "reversed") ||
+      TERMINAL_CHARGE_STATUSES.has(charge.status) && charge.status !== "paid"
+    );
   }
-  return scenario.requiredObservations.some(
-    (o) => o.kind === "terminal_status" && charge.status === o.status,
-  );
+  // ANY terminal settles the poll — reaching the wrong terminal is an
+  // evaluator failure, not a reason to poll until the hard timeout.
+  return TERMINAL_CHARGE_STATUSES.has(charge.status);
 }
 
 function customerInput(scenario: RunnableScenarioDef, runId: string) {
@@ -354,7 +365,7 @@ function customerInput(scenario: RunnableScenarioDef, runId: string) {
     config: { sandbox_outcome: scenario.outcomes.customer },
     external_id: runId,
     metadata: { scenario_id: scenario.id },
-    idempotencyKey: `${runId}-customer`,
+    idempotencyKey: randomUUID(),
   };
 }
 
@@ -371,7 +382,7 @@ function paykeyInput(
     config: { sandbox_outcome: scenario.outcomes.paykey ?? "active" },
     external_id: runId,
     metadata: { scenario_id: scenario.id },
-    idempotencyKey: `${runId}-paykey`,
+    idempotencyKey: randomUUID(),
   };
 }
 
@@ -397,7 +408,7 @@ function chargeInput(
         : {}),
     },
     metadata: { scenario_id: scenario.id },
-    idempotencyKey: `${runId}-charge`,
+    idempotencyKey: randomUUID(),
   };
 }
 

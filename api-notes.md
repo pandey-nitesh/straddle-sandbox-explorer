@@ -87,6 +87,11 @@ Never call: GET `/v1/customers/{id}/unmasked`, `/v1/charges/{id}/unmask`, `payke
   **SDK gotcha:** the Stainless per-request `idempotencyKey` option is **inert** in v0.3.0
   (`idempotencyHeader` never assigned) — send `Idempotency-Key` explicitly as the typed header
   param inside create/update params.
+  **Value validation (OBSERVED at the Wave 4 live gate, 2026-07-07):** a 43-char key
+  (`run-…-e-84b1-paykey-refusal`) was rejected with 400 `/bad_request`
+  `items:[{detail:"The Idempotency-Key header value is not valid."}]` while 35–37-char keys were
+  accepted — there is an undocumented length (or format) cap around ~40 chars. The engine sends a
+  UUID (36 chars) per create; exact cap UNVERIFIED.
 - Other optional typed header params on create/update: `Request-Id`, `Correlation-Id`,
   `Straddle-Account-Id` (platform-only; not needed).
 - **No `X-RateLimit-*` headers on any observed response. No `Retry-After` observed** (a 429 was

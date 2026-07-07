@@ -138,6 +138,9 @@ export const RunCompletedEventSchema = z.object({
   result: z.enum(["passed", "failed"]),
   duration_ms: z.number().nonnegative(),
   recording_path: z.string(), // runs/<run_id>.jsonl
+  // Run-level diagnostics not tied to one assertion (hard timeout, thrown
+  // client errors). Optional: absent on clean passes.
+  diagnostics: z.array(z.string()).optional(),
 });
 export type RunCompletedEvent = z.infer<typeof RunCompletedEventSchema>;
 
