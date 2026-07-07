@@ -124,6 +124,15 @@ export interface ReviewEvidence {
   summary: IdentityReviewSummary;
 }
 
+export interface PaykeyEvidence {
+  id: string;
+  status?: string;
+  label?: string;
+  institutionName?: string;
+  account?: string;
+  accountType?: string;
+}
+
 export interface RunState {
   runId: string;
   scenarioId: ScenarioId;
@@ -148,6 +157,7 @@ export interface RunState {
   exchanges: ExchangeEntry[];
   assertions: AssertionRow[];
   review?: ReviewEvidence;
+  paykey?: PaykeyEvidence;
   refusal?: RefusalEvidence;
   /** Raw events, sorted by seq (gaps expected), deduped by seq. */
   events: RunEvent[];
@@ -340,6 +350,7 @@ function deriveRun(events: readonly RunEvent[]): RunState | null {
   const pendingBackoff = new Map<string, number>();
   let completedEvent: RunCompletedEvent | undefined;
   let review: ReviewEvidence | undefined;
+  let paykey: PaykeyEvidence | undefined;
   let refusal: RefusalEvidence | undefined;
   let latestPaymentStatus: string | null = null;
 
@@ -459,6 +470,15 @@ function deriveRun(events: readonly RunEvent[]): RunState | null {
             elapsedMs: null,
           });
         }
+        if (
+          paykey === undefined &&
+          event.status >= 200 &&
+          event.status < 300 &&
+          event.method === "POST" &&
+          event.path === "/v1/bridge/bank_account"
+        ) {
+          paykey = derivePaykey(event.response_body);
+        }
         break;
       }
 
@@ -527,9 +547,37 @@ function deriveRun(events: readonly RunEvent[]): RunState | null {
     exchanges,
     assertions,
     ...(review !== undefined ? { review } : {}),
+    ...(paykey !== undefined ? { paykey } : {}),
     ...(refusal !== undefined ? { refusal } : {}),
     events: [...events],
   };
+}
+
+function derivePaykey(body: unknown): PaykeyEvidence | undefined {
+  const envelope = asRecord(body);
+  const data = asRecord(envelope.data);
+  if (typeof data.id !== "string") return undefined;
+  const bankData = asRecord(data.bank_data);
+  return {
+    id: data.id,
+    ...(typeof data.status === "string" ? { status: data.status } : {}),
+    ...(typeof data.label === "string" ? { label: data.label } : {}),
+    ...(typeof data.institution_name === "string"
+      ? { institutionName: data.institution_name }
+      : {}),
+    ...(typeof bankData.account_number === "string"
+      ? { account: bankData.account_number }
+      : {}),
+    ...(typeof bankData.account_type === "string"
+      ? { accountType: bankData.account_type }
+      : {}),
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 function backoffKey(

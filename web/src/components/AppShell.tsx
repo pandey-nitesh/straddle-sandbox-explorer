@@ -11,6 +11,7 @@ export interface AppShellProps {
   lifecycle?: ReactNode;
   wire?: ReactNode;
   summary?: ReactNode;
+  keyStatus?: "ok" | "missing" | "invalid";
   onRunAll?: () => void;
 }
 
@@ -57,6 +58,7 @@ function Placeholder({ children }: { children: ReactNode }) {
 }
 
 export function AppShell(props: AppShellProps) {
+  const keyStatus = props.keyStatus ?? "ok";
   return (
     <div className="flex h-full min-h-screen flex-col">
       <header className="flex h-14 shrink-0 items-center gap-3 border-b border-edge bg-surface-card px-6">
@@ -64,6 +66,16 @@ export function AppShell(props: AppShellProps) {
         {/* Accent-outline chip — a quiet echo of the hard-coded sandbox base URL. */}
         <span className="wire-quote rounded-chip border border-accent px-2 py-0.5 text-xs text-accent">
           sandbox
+        </span>
+        <span
+          data-status={keyStatus}
+          className={`wire-quote rounded-chip border px-2 py-0.5 text-xs ${
+            keyStatus === "ok"
+              ? "border-status-pass text-status-pass"
+              : "border-status-fail text-status-fail"
+          }`}
+        >
+          key {keyStatus}
         </span>
         <span className="flex-1" />
         <PrimaryButton onClick={props.onRunAll}>Run all</PrimaryButton>

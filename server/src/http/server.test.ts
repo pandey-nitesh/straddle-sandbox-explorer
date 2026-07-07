@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -169,28 +169,132 @@ describe("HTTP server", () => {
     await app.close();
   });
 
-  it("has Wave 5 recording endpoints stubbed", async () => {
+  it("lists and serves JSONL recordings, including partial markers", async () => {
+    const recordingDir = mkdtempSync(path.join(tmpdir(), "straddle-http-recordings-"));
+    const completeRunId = "run-20260707T120000Z-c-0001";
+    const partialRunId = "run-20260707T120000Z-c-0002";
+    writeFileSync(
+      path.join(recordingDir, `${completeRunId}.jsonl`),
+      [
+        JSON.stringify({
+          seq: 1,
+          timestamp: "2026-07-07T12:00:00.000Z",
+          type: "run.started",
+          run_id: completeRunId,
+          scenario_id: "c",
+          scenario: {
+            id: "c",
+            label: "C. Reversal",
+            purpose: "Mock/replay reversal evidence: paid before reversed.",
+            outcomes: { customer: "verified", paykey: "active", charge: "reversed_insufficient_funds" },
+            requiredObservations: [{ kind: "ordered_statuses", statuses: ["paid", "reversed"] }],
+          },
+        }),
+        JSON.stringify({
+          seq: 2,
+          timestamp: "2026-07-07T12:00:01.000Z",
+          type: "run.completed",
+          run_id: completeRunId,
+          scenario_id: "c",
+          result: "passed",
+          duration_ms: 1_000,
+          recording_path: path.join(recordingDir, `${completeRunId}.jsonl`),
+        }),
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(
+      path.join(recordingDir, `${partialRunId}.jsonl`),
+      JSON.stringify({
+        seq: 3,
+        timestamp: "2026-07-07T12:00:00.000Z",
+        type: "run.started",
+        run_id: partialRunId,
+        scenario_id: "c",
+        scenario: {
+          id: "c",
+          label: "C. Reversal",
+          purpose: "Mock/replay reversal evidence: paid before reversed.",
+          outcomes: { customer: "verified", paykey: "active", charge: "reversed_insufficient_funds" },
+          requiredObservations: [{ kind: "ordered_statuses", statuses: ["paid", "reversed"] }],
+        },
+      }) + "\n",
+    );
     const app = await createHttpServer({
       config: loadConfig({ env: {}, envFilePath: false }),
       epoch: "test-epoch",
       mockMode: true,
       attachRecorder: false,
+      recordingDir,
       serveStatic: false,
       logger: false,
     });
 
     const list = await app.inject({ method: "GET", url: "/api/recordings" });
     expect(list.statusCode).toBe(200);
-    expect(list.json()).toEqual([]);
+    expect(list.json()).toEqual([
+      {
+        run_id: completeRunId,
+        path: path.join(recordingDir, `${completeRunId}.jsonl`),
+        complete: true,
+      },
+      {
+        run_id: partialRunId,
+        path: path.join(recordingDir, `${partialRunId}.jsonl`),
+        complete: false,
+      },
+    ]);
 
     const item = await app.inject({
       method: "GET",
-      url: "/api/recordings/run-test",
+      url: `/api/recordings/${completeRunId}`,
     });
-    expect(item.statusCode).toBe(501);
-    expect(item.json()).toEqual({
-      error: "recording playback lands in Wave 5",
+    expect(item.statusCode).toBe(200);
+    expect(item.body).toContain('"type":"run.completed"');
+
+    await app.close();
+  });
+
+  it("streams epoch and backfilled events over SSE", async () => {
+    const bus = createBus();
+    const registry = createRunRegistry(bus);
+    bus.emit({
+      type: "run.started",
+      run_id: "run-20260707T120000Z-e-0001",
+      scenario_id: "e",
+      scenario: {
+        id: "e",
+        label: "E. Rejected identity",
+        purpose: "Rejected customer blocks downstream paykey creation.",
+        outcomes: { customer: "rejected", paykey: "active" },
+        requiredObservations: [
+          { kind: "customer_review", status: "rejected" },
+          { kind: "api_refusal", afterAction: "create_paykey" },
+        ],
+      },
     });
+    const app = await createHttpServer({
+      config: loadConfig({ env: {}, envFilePath: false }),
+      epoch: "test-epoch",
+      bus,
+      registry,
+      mockMode: true,
+      attachRecorder: false,
+      serveStatic: false,
+      logger: false,
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/events/stream?since=0&once=1",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["content-type"]).toContain("text/event-stream");
+    expect(response.body).toContain("event: epoch");
+    expect(response.body).toContain('"epoch":"test-epoch"');
+    expect(response.body).toContain("event: run-event");
+    expect(response.body).toContain('"type":"run.started"');
 
     await app.close();
   });

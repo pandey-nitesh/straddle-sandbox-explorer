@@ -6,6 +6,8 @@ import {
   createEventPoller,
   getEvents,
   getHealth,
+  getRecordingEvents,
+  getRecordings,
   getReport,
   getRuns,
   postRuns,
@@ -81,11 +83,13 @@ function fakeServer(initial: {
   epoch: string;
   snapshot?: RegistrySnapshot;
   events?: RunEvent[];
+  recordings?: Record<string, RunEvent[]>;
 }) {
   const state = {
     epoch: initial.epoch,
     snapshot: initial.snapshot ?? { runs: [], latest_by_scenario: {} },
     events: initial.events ?? [],
+    recordings: initial.recordings ?? {},
   };
   const calls: Array<{ input: string; method: string }> = [];
   const fetchFn: FetchLike = async (input, init) => {
@@ -101,11 +105,59 @@ function fakeServer(initial: {
         events: state.events.filter((e) => e.seq > since),
       });
     }
+    if (input === "/api/recordings") {
+      return json(
+        Object.entries(state.recordings).map(([run_id, recording]) => ({
+          run_id,
+          path: `/tmp/${run_id}.jsonl`,
+          complete: recording.some((event) => event.type === "run.completed"),
+        })),
+      );
+    }
+    if (input.startsWith("/api/recordings/")) {
+      const runId = decodeURIComponent(input.slice("/api/recordings/".length));
+      const recording = state.recordings[runId];
+      if (recording === undefined) return json({ error: "not found" }, 404);
+      return new Response(
+        `${recording.map((event) => JSON.stringify(event)).join("\n")}\n`,
+        { headers: { "content-type": "application/x-ndjson" } },
+      );
+    }
     if (input === "/api/health") return json({ epoch: state.epoch, key: "ok" });
     if (input === "/api/report") return json({ generated_at: "x" });
     return json({ error: "not found" }, 404);
   };
   return { state, calls, fetchFn };
+}
+
+class FakeEventSource {
+  onerror: (() => void) | null = null;
+  closed = false;
+  readonly listeners = new Map<string, Array<(event: MessageEvent<string>) => void>>();
+
+  addEventListener(type: string, listener: (event: MessageEvent<string>) => void): void {
+    const current = this.listeners.get(type) ?? [];
+    current.push(listener);
+    this.listeners.set(type, current);
+  }
+
+  close(): void {
+    this.closed = true;
+  }
+
+  emit(type: string, data: unknown): void {
+    for (const listener of this.listeners.get(type) ?? []) {
+      listener({ data: JSON.stringify(data) } as MessageEvent<string>);
+    }
+  }
+
+  fail(): void {
+    this.onerror?.();
+  }
+}
+
+async function flush(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 function collectingHandlers() {
@@ -134,6 +186,8 @@ describe("typed endpoint wrappers", () => {
     await getRuns(server.fetchFn);
     await getEvents(7, server.fetchFn);
     await getReport(server.fetchFn);
+    await getRecordings(server.fetchFn);
+    await getRecordingEvents("run-1", server.fetchFn).catch(() => undefined);
     const created = await postRuns(["a", "c"], server.fetchFn);
 
     expect(server.calls.map((c) => `${c.method} ${c.input}`)).toEqual([
@@ -141,9 +195,27 @@ describe("typed endpoint wrappers", () => {
       "GET /api/runs",
       "GET /api/events?since=7",
       "GET /api/report",
+      "GET /api/recordings",
+      "GET /api/recordings/run-1",
       "POST /api/runs",
     ]);
     expect(created).toEqual({ run_ids: ["run-1"] });
+  });
+
+  it("parses recording summaries and JSONL recording events", async () => {
+    const runId = "run-1";
+    const recording = [started(1, runId), statusEvent(2, runId, "paid")];
+    const server = fakeServer({
+      epoch: "e1",
+      recordings: { [runId]: recording },
+    });
+
+    await expect(getRecordings(server.fetchFn)).resolves.toEqual([
+      { run_id: runId, path: `/tmp/${runId}.jsonl`, complete: false },
+    ]);
+    await expect(getRecordingEvents(runId, server.fetchFn)).resolves.toEqual(
+      recording,
+    );
   });
 
   it("postRuns serializes the scenario selection as JSON", async () => {
@@ -332,5 +404,47 @@ describe("event poller", () => {
     });
     await Promise.all([poller.tick(), poller.tick(), poller.tick()]);
     expect(server.calls.filter((c) => c.input === "/api/runs")).toHaveLength(1);
+  });
+
+  it("uses SSE when available and falls back to polling on EventSource error", async () => {
+    const initial = [started(1, "run-1")];
+    const server = fakeServer({
+      epoch: "e1",
+      snapshot: snapshotWith(initial),
+      events: initial,
+    });
+    const collected = collectingHandlers();
+    let openedUrl = "";
+    const sources: FakeEventSource[] = [];
+    const poller = createEventPoller({
+      handlers: collected.handlers,
+      fetchFn: server.fetchFn,
+      eventSourceFactory: (url) => {
+        openedUrl = url;
+        const source = new FakeEventSource();
+        sources.push(source);
+        return source as unknown as EventSource;
+      },
+    });
+
+    poller.start();
+    await flush();
+
+    expect(openedUrl).toBe("/api/events/stream?since=1");
+    const source = sources[0];
+    expect(source).toBeDefined();
+    source?.emit("epoch", { epoch: "e1" });
+    source?.emit("run-event", statusEvent(3, "run-1", "paid"));
+    expect(collected.batches.at(-1)?.map((event) => event.seq)).toEqual([3]);
+    expect(poller.cursor()).toBe(3);
+
+    server.state.events = [...initial, statusEvent(3, "run-1", "paid"), statusEvent(5, "run-1", "reversed")];
+    source?.fail();
+    await flush();
+
+    expect(source?.closed).toBe(true);
+    expect(server.calls.some((call) => call.input === "/api/events?since=3")).toBe(true);
+    expect(collected.batches.at(-1)?.map((event) => event.seq)).toEqual([5]);
+    poller.stop();
   });
 });

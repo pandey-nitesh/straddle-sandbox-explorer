@@ -1,4 +1,10 @@
-import type { Report, RunEvent, ScenarioDef, ScenarioId } from "@sse/shared";
+import {
+  RunEventSchema,
+  type Report,
+  type RunEvent,
+  type ScenarioDef,
+  type ScenarioId,
+} from "@sse/shared";
 
 /**
  * Typed wrappers for the HTTP API (spec §9/§10), plus the event polling loop.
@@ -57,6 +63,12 @@ export interface EventsResponse {
 /** POST /api/runs 202 body. */
 export interface StartRunsResponse {
   run_ids: string[];
+}
+
+export interface RecordingSummary {
+  run_id: string;
+  path: string;
+  complete: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -141,6 +153,25 @@ export function getReport(fetchFn: FetchLike = boundFetch): Promise<Report> {
   return requestJson<Report>(fetchFn, "/api/report");
 }
 
+export function getRecordings(
+  fetchFn: FetchLike = boundFetch,
+): Promise<RecordingSummary[]> {
+  return requestJson<RecordingSummary[]>(fetchFn, "/api/recordings");
+}
+
+export async function getRecordingEvents(
+  runId: string,
+  fetchFn: FetchLike = boundFetch,
+): Promise<RunEvent[]> {
+  const response = await fetchFn(`/api/recordings/${encodeURIComponent(runId)}`);
+  const text = await response.text();
+  if (!response.ok) throw new ApiError(`/api/recordings/${runId}`, response.status, text);
+  return text
+    .split(/\r?\n/)
+    .filter((line) => line.trim() !== "")
+    .map((line) => RunEventSchema.parse(JSON.parse(line)));
+}
+
 // ---------------------------------------------------------------------------
 // Epoch gate
 // ---------------------------------------------------------------------------
@@ -212,6 +243,8 @@ export interface EventPollerOptions {
   fetchFn?: FetchLike;
   /** Share a gate with other epoch-carrying calls (e.g. header health pill). */
   epochGate?: EpochGate;
+  /** Injectable EventSource factory; tests can force fallback by omitting it. */
+  eventSourceFactory?: (url: string) => EventSource;
 }
 
 export interface EventPoller {
@@ -238,12 +271,18 @@ export function createEventPoller(options: EventPollerOptions): EventPoller {
   const fetchFn = options.fetchFn ?? boundFetch;
   const intervalMs = options.intervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const gate = options.epochGate ?? createEpochGate();
+  const eventSourceFactory =
+    options.eventSourceFactory ??
+    (options.fetchFn === undefined && typeof EventSource !== "undefined"
+      ? (url: string) => new EventSource(url)
+      : undefined);
 
   let cursor = 0;
   let hydrated = false;
   let running = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let inFlight: Promise<void> | null = null;
+  let source: EventSource | null = null;
 
   function invalidate(): void {
     cursor = 0;
@@ -299,14 +338,61 @@ export function createEventPoller(options: EventPollerOptions): EventPoller {
     });
   }
 
+  async function startSse(): Promise<void> {
+    try {
+      if (!hydrated) await hydrate();
+      if (!running || source !== null) return;
+      source = eventSourceFactory?.(`/api/events/stream?since=${cursor}`) ?? null;
+      if (source === null) {
+        loop();
+        return;
+      }
+      source.addEventListener("epoch", (message: MessageEvent<string>) => {
+        try {
+          const payload = JSON.parse(message.data) as { epoch: string };
+          if (gate.check(payload.epoch) === "mismatch") {
+            source?.close();
+            source = null;
+            invalidate();
+            if (running) void startSse();
+          }
+        } catch (error) {
+          handlers.onError?.(error);
+        }
+      });
+      source.addEventListener("run-event", (message: MessageEvent<string>) => {
+        try {
+          const event = RunEventSchema.parse(JSON.parse(message.data));
+          cursor = Math.max(cursor, event.seq);
+          handlers.onEvents([event]);
+        } catch (error) {
+          handlers.onError?.(error);
+        }
+      });
+      source.onerror = () => {
+        source?.close();
+        source = null;
+        if (running) loop();
+      };
+    } catch (error) {
+      handlers.onError?.(error);
+      if (running) loop();
+    }
+  }
+
   return {
     start(): void {
       if (running) return;
       running = true;
-      loop();
+      if (eventSourceFactory !== undefined) void startSse();
+      else loop();
     },
     stop(): void {
       running = false;
+      if (source !== null) {
+        source.close();
+        source = null;
+      }
       if (timer !== undefined) clearTimeout(timer);
       timer = undefined;
     },

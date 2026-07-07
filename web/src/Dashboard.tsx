@@ -7,7 +7,11 @@ import {
   type FetchLike,
 } from "./api";
 import { AppShell } from "./components/AppShell";
+import { DetailPanel } from "./components/DetailPanel";
+import { EventConsoleDrawer } from "./components/EventConsoleDrawer";
 import { ExchangeLog } from "./components/ExchangeLog";
+import { InspectorPanel } from "./components/InspectorPanel";
+import { ReplayPanel } from "./components/ReplayPanel";
 import { RunSummary } from "./components/RunSummary";
 import { ScenarioList } from "./components/ScenarioList";
 import { Timeline } from "./components/Timeline";
@@ -19,8 +23,11 @@ import {
 } from "./state/eventStore";
 import {
   projectAssertionRows,
+  projectDetailPanel,
   projectEvidence,
+  projectEventConsoleEntries,
   projectExchanges,
+  projectInspectorEntries,
   projectScenarioItems,
   projectTimelineNodes,
 } from "./state/projections";
@@ -120,6 +127,18 @@ export function Dashboard({ fetchFn }: DashboardProps) {
     () => (run === null ? [] : projectExchanges(run)),
     [run],
   );
+  const detailPanel = useMemo(
+    () => (run === null ? undefined : projectDetailPanel(run)),
+    [run],
+  );
+  const inspectorEntries = useMemo(
+    () => (run === null ? [] : projectInspectorEntries(run)),
+    [run],
+  );
+  const eventConsoleEntries = useMemo(
+    () => (run === null ? [] : projectEventConsoleEntries(run)),
+    [run],
+  );
   const assertionRows = useMemo(() => projectAssertionRows(state), [state]);
 
   const summary = state.summary;
@@ -134,15 +153,19 @@ export function Dashboard({ fetchFn }: DashboardProps) {
   return (
     <AppShell
       onRunAll={onRunAll}
+      keyStatus="ok"
       scenarios={
-        <ScenarioList
-          items={items}
-          {...(state.selectedScenario !== null
-            ? { selectedId: state.selectedScenario }
-            : {})}
-          onSelect={onSelect}
-          onRun={onRun}
-        />
+        <div className="space-y-4">
+          <ScenarioList
+            items={items}
+            {...(state.selectedScenario !== null
+              ? { selectedId: state.selectedScenario }
+              : {})}
+            onSelect={onSelect}
+            onRun={onRun}
+          />
+          <ReplayPanel fetchFn={fetchFn} />
+        </div>
       }
       lifecycle={
         run === null ? undefined : (
@@ -153,9 +176,16 @@ export function Dashboard({ fetchFn }: DashboardProps) {
           />
         )
       }
-      wire={run === null || exchanges.length === 0 ? undefined : (
-        <ExchangeLog entries={exchanges} />
-      )}
+      wire={
+        run === null || detailPanel === undefined ? undefined : (
+          <div className="space-y-4">
+            <DetailPanel {...detailPanel} />
+            <InspectorPanel entries={inspectorEntries} />
+            <EventConsoleDrawer entries={eventConsoleEntries} />
+            {exchanges.length > 0 && <ExchangeLog entries={exchanges} />}
+          </div>
+        )
+      }
       summary={
         summary.covered === 0 ? undefined : (
           <RunSummary

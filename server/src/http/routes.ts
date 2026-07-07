@@ -1,4 +1,8 @@
 import type { FastifyInstance } from "fastify";
+import { createReadStream } from "node:fs";
+import { readdir, readFile, stat } from "node:fs/promises";
+import path from "node:path";
+import { RunEventSchema } from "@sse/shared";
 import type { Config } from "../config.js";
 import { createBus, type EventBus } from "../engine/bus.js";
 import type { RunRegistry } from "../engine/registry.js";
@@ -21,6 +25,12 @@ export interface RegisterRoutesOptions {
 
 interface RunsPostBody {
   scenarios?: string[];
+}
+
+interface RecordingSummary {
+  run_id: string;
+  path: string;
+  complete: boolean;
 }
 
 export async function registerRoutes(
@@ -136,9 +146,95 @@ export async function registerRoutes(
     }),
   );
 
-  app.get("/api/recordings", async () => []);
+  app.get("/api/recordings", async () => listRecordings(options.recordingDir));
 
-  app.get("/api/recordings/:run_id", async (_request, reply) =>
-    reply.code(501).send({ error: "recording playback lands in Wave 5" }),
+  app.get<{ Params: { run_id: string } }>(
+    "/api/recordings/:run_id",
+    async (request, reply) => {
+      const runId = request.params.run_id;
+      if (!isSafeRunId(runId)) {
+        return reply.code(400).send({ error: "invalid run_id" });
+      }
+      const file = path.join(options.recordingDir, `${runId}.jsonl`);
+      try {
+        await stat(file);
+      } catch {
+        return reply.code(404).send({ error: "recording not found" });
+      }
+      return reply.type("application/x-ndjson").send(createReadStream(file));
+    },
   );
+
+  app.get<{ Querystring: { since?: string; once?: string } }>(
+    "/api/events/stream",
+    async (request, reply) => {
+      const rawSince = request.query.since ?? "0";
+      if (!/^\d+$/.test(rawSince)) {
+        return reply.code(400).send({ error: "since must be a non-negative integer" });
+      }
+      const since = Number.parseInt(rawSince, 10);
+      reply.hijack();
+      reply.raw.writeHead(200, {
+        "content-type": "text/event-stream; charset=utf-8",
+        "cache-control": "no-cache, no-transform",
+        connection: "keep-alive",
+      });
+      writeSse(reply.raw, "epoch", { epoch: options.epoch });
+      for (const event of options.registry.eventsSince(since)) {
+        writeSse(reply.raw, "run-event", event);
+      }
+      if (request.query.once === "1") {
+        reply.raw.end();
+        return;
+      }
+      const unsubscribe = options.bus.subscribe((event) => {
+        writeSse(reply.raw, "run-event", event);
+      });
+      request.raw.on("close", () => {
+        unsubscribe();
+      });
+    },
+  );
+}
+
+async function listRecordings(recordingDir: string): Promise<RecordingSummary[]> {
+  let entries: string[];
+  try {
+    entries = await readdir(recordingDir);
+  } catch {
+    return [];
+  }
+  const summaries = await Promise.all(
+    entries
+      .filter((entry) => entry.endsWith(".jsonl"))
+      .map(async (entry): Promise<RecordingSummary | null> => {
+        const runId = entry.slice(0, -".jsonl".length);
+        if (!isSafeRunId(runId)) return null;
+        const file = path.join(recordingDir, entry);
+        const contents = await readFile(file, "utf8");
+        const complete = contents
+          .split(/\r?\n/)
+          .filter((line) => line.trim() !== "")
+          .some((line) => {
+            try {
+              return RunEventSchema.parse(JSON.parse(line)).type === "run.completed";
+            } catch {
+              return false;
+            }
+          });
+        return { run_id: runId, path: file, complete };
+      }),
+  );
+  return summaries
+    .filter((summary): summary is RecordingSummary => summary !== null)
+    .sort((a, b) => a.run_id.localeCompare(b.run_id));
+}
+
+function isSafeRunId(runId: string): boolean {
+  return /^[A-Za-z0-9._-]+$/.test(runId);
+}
+
+function writeSse(raw: NodeJS.WritableStream, event: string, data: unknown): void {
+  raw.write(`event: ${event}\n`);
+  raw.write(`data: ${JSON.stringify(data)}\n\n`);
 }

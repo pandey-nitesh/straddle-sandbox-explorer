@@ -8,6 +8,16 @@ import type { ExchangeEntry as ExchangeLogEntry } from "../components/ExchangeLo
 import type { ScenarioListItem } from "../components/ScenarioList";
 import type { ScenarioAssertions } from "../components/RunSummary";
 import type {
+  DetailPanelProps,
+  DetailRow,
+} from "../components/DetailPanel";
+import type {
+  EventConsoleEntry,
+} from "../components/EventConsoleDrawer";
+import type {
+  InspectorEntry,
+} from "../components/InspectorPanel";
+import type {
   TimelineNode as TimelineViewNode,
   TimelineNodeKind,
 } from "../components/Timeline";
@@ -303,4 +313,99 @@ export function projectExchanges(run: RunState): ExchangeLogEntry[] {
       },
     ];
   });
+}
+
+// ---------------------------------------------------------------------------
+// P1 right-pane details
+// ---------------------------------------------------------------------------
+
+export function projectDetailPanel(run: RunState): DetailPanelProps {
+  const identityRows: DetailRow[] = [];
+  if (run.review !== undefined) {
+    identityRows.push(
+      { label: "Customer", value: run.review.customerId },
+      { label: "Status", value: run.review.status },
+      {
+        label: "Risk",
+        value:
+          run.review.summary.risk_score === undefined
+            ? "n/a"
+            : run.review.summary.risk_score.toFixed(3),
+      },
+      {
+        label: "Correlation",
+        value:
+          run.review.summary.correlation_score === undefined
+            ? "n/a"
+            : run.review.summary.correlation_score.toFixed(3),
+      },
+      {
+        label: "Reason codes",
+        value:
+          run.review.summary.reason_codes.length === 0
+            ? "none"
+            : run.review.summary.reason_codes.join(", "),
+      },
+    );
+  }
+
+  const paykeyRows: DetailRow[] = [];
+  if (run.paykey !== undefined) {
+    paykeyRows.push(
+      { label: "Paykey", value: run.paykey.id },
+      ...(run.paykey.status !== undefined
+        ? [{ label: "Status", value: run.paykey.status }]
+        : []),
+      ...(run.paykey.institutionName !== undefined
+        ? [{ label: "Institution", value: run.paykey.institutionName }]
+        : []),
+      ...(run.paykey.label !== undefined
+        ? [{ label: "Label", value: run.paykey.label }]
+        : []),
+      ...(run.paykey.account !== undefined
+        ? [{ label: "Account", value: run.paykey.account }]
+        : []),
+      ...(run.paykey.accountType !== undefined
+        ? [{ label: "Type", value: run.paykey.accountType }]
+        : []),
+    );
+  }
+
+  return { identityRows, paykeyRows };
+}
+
+export function projectInspectorEntries(run: RunState): InspectorEntry[] {
+  return run.events.map((event) => ({
+    id: String(event.seq),
+    seq: event.seq,
+    type: event.type,
+    summary: summarizeEvent(event),
+    value: event,
+  }));
+}
+
+export function projectEventConsoleEntries(run: RunState): EventConsoleEntry[] {
+  return run.events.map((event) => ({
+    id: String(event.seq),
+    line: `${String(event.seq).padStart(4, "0")} ${event.type} ${event.run_id}`,
+  }));
+}
+
+function summarizeEvent(event: RunState["events"][number]): string {
+  switch (event.type) {
+    case "api.exchange":
+      return `${event.method} ${event.path} -> ${event.status}`;
+    case "payment.status_changed":
+      return `${event.from ?? "start"} -> ${event.to}`;
+    case "customer.review_changed":
+      return `customer ${event.customer_id}: ${event.status}`;
+    case "retry.scheduled":
+      return `attempt ${event.attempt} after ${event.delay_ms}ms`;
+    case "scenario.assertion":
+      return `${event.kind}: ${event.pass ? "pass" : "fail"}`;
+    case "run.completed":
+      return event.result;
+    case "run.started":
+      return event.scenario.label;
+  }
 }
