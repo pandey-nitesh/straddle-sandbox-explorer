@@ -4,6 +4,20 @@ Local Vite + React and Node.js explorer for Straddle's sandbox ACH lifecycle (sc
 
 Setup, commands, and artifact locations will be documented here as the waves land (spec §13).
 
+## Commands
+
+- `npm run dev` — tsx-watch server on `:8787` plus Vite on `:5173` (`/api` proxied to `8787`). Orchestrated by `scripts/dev.ts`, a tiny dependency-free spawner (no `concurrently`).
+- `npm start` — builds `web/dist` if absent, then serves API + static bundle single-origin on `:8787` (`scripts/start.ts`).
+- `MOCK_MODE=1 npm start` (or `npm run dev`) — same server wired to the scripted mock Straddle client instead of the live sandbox (no API key needed); the mock replays the M0-measured timings, including Scenario C's contract-shape `paid → reversed`.
+- `NODE_USE_ENV_PROXY=1 npx tsx scripts/qa-screenshots.ts` — Wave 4 QA driver: boots mock/missing-key/invalid-key servers over the built bundle and captures the design §11 screenshot set into `web/qa-screenshots/` (gitignored) with Playwright. The mock server runs on a 30×-scaled clock so C's ~6-minute lifecycle lands in ~12 s.
+
+## Web workspace decisions (Wave 4)
+
+- `web/tsconfig.json` uses `moduleResolution: "bundler"` (extending `tsconfig.base.json`): Vite bundles `web/`, so NodeNext `.js` relative-import extensions are not used there.
+- Fonts are self-hosted via `@fontsource/inter` (400/500/600) and `@fontsource/jetbrains-mono` (400/600) with `font-display: swap` — equivalent self-hosting to design.md §11's `web/public/fonts` (the woff2 files are bundled locally into `web/dist/assets`; no external font request at runtime; verified in the smoke test and the built CSS).
+- Tailwind v4 with `@tailwindcss/vite`: design.md §11's `tailwind.config` token mapping is realized as the v4 CSS-first equivalent — an `@theme inline` block in `web/src/styles/app.css` pointing utilities at the custom properties in `web/src/styles/tokens.css`, so D0 calibration stays a one-file change and components never hard-code hexes.
+- D0 brand calibration has not happened: the `--brand-*` tokens ship the documented teal/slate fallbacks from design.md §3.
+
 ## Deviations from spec
 
 Live-sandbox findings from the M0 spike that contradict the original spec assumptions. Authoritative detail: `api-notes.md` §12; resolutions: `docs/spec.md` §18.

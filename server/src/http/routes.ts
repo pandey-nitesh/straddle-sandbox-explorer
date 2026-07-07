@@ -50,7 +50,14 @@ export async function registerRoutes(
       : {
           epoch: options.epoch,
           key: "invalid",
-          ...(health.message !== undefined ? { error_body: health.message } : {}),
+          // Spec §9/§18.5: error_body carries Straddle's VERBATIM (redacted)
+          // error body and is absent when the 401 had no body — never our own
+          // synthesized message (Wave 4 QA fix: it previously sent
+          // health.message, which made the UI render our prose as if it were
+          // Straddle's response).
+          ...(health.error_body !== undefined
+            ? { error_body: health.error_body }
+            : {}),
         };
   });
 
