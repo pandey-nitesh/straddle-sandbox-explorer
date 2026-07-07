@@ -16,7 +16,13 @@ The product is deliberately local-only: no database, no auth, no production Stra
 
 - **M0 decides API truth.** No durable app architecture depends on guessed Straddle paths, enums, headers, or SDK behavior.
 - **The event stream is the source of truth.** UI, recorder, replay, reports, and logs are projections of one event bus. There is exactly one bus per process; consumers subscribe, they are not passed around as separate optional parameters.
-- **Redaction happens before capture, server-side only.** Unredacted Straddle payloads never enter events, reports, recordings, browser payloads, or app logs. The redactor lives in `server/` — nothing in `web/` may ever need it, and its absence from the client bundle is itself an invariant.
+- **Credential redaction happens before capture, server-side only.** API keys,
+  auth material, paykey tokens, account/routing numbers, and hard identifiers
+  never enter events, reports, recordings, browser payloads, or app logs.
+  Non-credential sandbox evidence may be captured so the UI can inspect what
+  the sandbox returned. The redactor lives in `server/` — nothing in `web/`
+  may ever need it, and its absence from the client bundle is itself an
+  invariant.
 - **Shared schemas are contracts.** Server, CLI, scripts, and web import the same Zod-backed types from `shared/`. Facts derivable from a contract (e.g. "this scenario expects a reversal") are derived, never stored alongside it.
 - **Interface-first, mock-second, sandbox-last.** Every consumer of the Straddle client is built against the `StraddleClient` interface and a scripted mock before the real adapter exists.
 - Scenario execution is concurrent in web mode. Serial execution is CLI-only and P1.
@@ -154,10 +160,10 @@ Every event carries a **globally monotonic per-process `seq`** (assigned by the 
 export const RunEventSchema = z.discriminatedUnion("type", [
   RunStartedEventSchema,        // scenario def snapshot, run_id
   ApiExchangeEventSchema,       // method, path, status, latency_ms, attempt,
-                                // redacted request/response bodies
+                                // credential-redacted request/response bodies
   CustomerReviewChangedEventSchema, // settled review state + IdentityReviewSummary
   PaymentStatusChangedEventSchema,  // resource id, from, to, return/reason codes,
-                                    // redacted detail
+                                    // credential-redacted detail
   RetryScheduledEventSchema,    // status/error class, attempt, delay_ms
   ScenarioAssertionEventSchema, // one per RequiredObservation: kind, pass, diagnostic
   RunCompletedEventSchema,      // final scenario result, duration_ms, recording_path
@@ -192,7 +198,7 @@ export const IdentityReviewSummarySchema = z.object({
 export const ApiRefusalSchema = z.object({
   attempted_action: z.enum(["create_paykey","create_charge"]),
   http_status: z.number(),
-  error_body: z.unknown(),          // Straddle's body, verbatim post-redaction
+  error_body: z.unknown(),          // Straddle's body, verbatim post credential-redaction
 });
 ```
 
@@ -325,7 +331,7 @@ Rules:
 
 ## 7. Straddle Client Boundary
 
-`server/src/straddle/client.ts` is the only module that calls Straddle. Responsibilities: load the key server-side only; hard-code the sandbox base URL; select SDK or `fetch` per M0; attach auth and M0-confirmed idempotency/request headers; keep SDK/fetch verbose logging off; retry per the §6 error model; redact **before** constructing results, errors, or events; emit one `api.exchange` per HTTP exchange (attempt-numbered).
+`server/src/straddle/client.ts` is the only module that calls Straddle. Responsibilities: load the key server-side only; hard-code the sandbox base URL; select SDK or `fetch` per M0; attach auth and M0-confirmed idempotency/request headers; keep SDK/fetch verbose logging off; retry per the §6 error model; credential-redact **before** constructing results, errors, or events; emit one `api.exchange` per HTTP exchange (attempt-numbered).
 
 No other module imports SDK types. SDK outputs are wrapped in local DTOs so a later `fetch` fallback cannot leak through the codebase.
 
@@ -335,7 +341,7 @@ No other module imports SDK types. SDK outputs are wrapped in local DTOs so a la
 
 The redactor lives in `server/src/redaction.ts` — moved out of `shared/` deliberately. Nothing in `web/` may ever need it; if the browser needed a redactor, secrets would already have crossed the wire. Scripts and tests import it from the server workspace. A trivial guard test asserts the redactor module is not reachable from the web bundle.
 
-Masking (Layer 1, structural, at capture time): authorization and key-like headers; the key in strings, URLs, query params, JSON bodies, and error echoes; account/routing **fields by name** (variants per `api-notes.md`), including nested objects and arrays — field-name matching catches sandbox-*generated* values without knowing them in advance.
+Masking (Layer 1, structural, at capture time): authorization and key-like headers; the key in strings, URLs, query params, JSON bodies, and error echoes; paykey tokens; TAN; SSN/EIN/DOB; IP address; account/routing **fields by name** (variants per `api-notes.md`), including nested objects and arrays — field-name matching catches sandbox-*generated* values without knowing them in advance. Non-credential sandbox evidence is deliberately preserved for inspection: customer names, email/phone, addresses, review/status details, metadata, and response diagnostics stay visible unless they contain one of the credential/canary patterns above.
 
 **Canary mechanism (Layer 2) — concrete, no sensitive file:** `scripts/check-secrets.ts` builds its canary list at scan time from (a) `STRADDLE_API_KEY` read from the environment and (b) the static `SEEDED_BANK` constants imported from `shared/src/constants.ts` — the only account/routing values the engine ever sends. Nothing sensitive is ever persisted for the scanner's benefit. The script greps server log output, `report.json`, `runs/*.jsonl`, and `web/dist`, verifies `spike/` and `runs/` are untracked by git, and exits non-zero on any hit.
 
@@ -353,7 +359,7 @@ Fastify serves the JSON API and static `web/dist` in `npm start` mode.
 | `/api/events` | GET | `?since=<seq>` | `{ epoch, events: RunEvent[] }` with `seq > since` |
 | `/api/report` | GET | none | `ReportSchema` report per §5 suite semantics |
 | `/api/recordings` | GET | none | list of `{ run_id, path, complete }` (P1, for replay) |
-| `/api/recordings/:run_id` | GET | none | the JSONL file (P1; already redacted) |
+| `/api/recordings/:run_id` | GET | none | the JSONL file (P1; already credential-redacted) |
 
 Semantics: `POST /api/runs` is always accepted, including while other runs are live — each run is independent, and re-running a scenario simply becomes the new "latest run" for report and dashboard purposes. No `mode` parameter exists; web execution is concurrent by design. P0 event delivery is client polling every ~2 s; P1 adds SSE on the same `RunEventSchema` without contract change.
 
@@ -363,9 +369,9 @@ Single route; a projection of the event log.
 
 - `api.ts`: typed wrappers; every response's `epoch` is checked against the stored one — mismatch clears state and re-hydrates from `GET /api/runs` (§3).
 - `eventStore.ts`: reducer over `RunEvent[]`, keyed by `run_id`, ordered by `seq` **without assuming density**; derives per-scenario latest run, selected scenario, timeline nodes, exchange list.
-- `App.tsx`: shell + startup states (health loading → missing-key instructions → invalid-key error with redacted Straddle body → ready).
+- `App.tsx`: shell + startup states (health loading → missing-key instructions → invalid-key error with credential-redacted Straddle body → ready).
 
-P0 layout: header (sandbox badge, Run All); left pane scenario rows A–E (purpose, outcome, status chip, Run); center timeline (every observed transition, elapsed deltas, amber provisional `paid` in reversal scenarios, both `paid` and `reversed` as separate nodes, return/reason codes on terminal nodes); right pane chronological redacted exchange list (method, path, status, latency, formatted JSON — no search, filters, cURL, or tree at P0); compact summary strip with report download (blob of `GET /api/report`).
+P0 layout: header (sandbox badge, Run All); left pane scenario rows A–E (purpose, outcome, status chip, Run); center timeline (every observed transition, elapsed deltas, amber provisional `paid` in reversal scenarios, both `paid` and `reversed` as separate nodes, return/reason codes on terminal nodes); right pane chronological credential-redacted exchange list (method, path, status, latency, formatted JSON — no search, filters, cURL, or tree at P0); compact summary strip with report download (blob of `GET /api/report`).
 
 P1: identity panel renders the already-captured review summary **and the paykey summary** (masked account, status, institution) per PRD FR-4 — the paykey half was dropped in design v1.
 

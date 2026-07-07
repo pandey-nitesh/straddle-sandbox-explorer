@@ -1,6 +1,7 @@
 /**
  * Redactor unit tests (spec §12): known-value SYNTHETIC fixtures only.
- * The key is fake, the paykey token is invented, PII is invented; the only
+ * The key and paykey token are invented. Customer/address fixtures are
+ * synthetic sandbox evidence and may survive credential redaction. The only
  * "real" values are the documented seeded-bank constants from @sse/shared,
  * which are public docs examples AND canary values that must never survive.
  */
@@ -191,7 +192,7 @@ describe("redactValue / redactBody — field-name masking at any depth", () => {
     expectZeroSurvivals(out);
   });
 
-  it("masks PII fields and metadata leaves in a customer create body", () => {
+  it("preserves non-credential sandbox evidence in a customer create body", () => {
     const body = {
       name: "Test Person",
       type: "individual",
@@ -220,54 +221,58 @@ describe("redactValue / redactBody — field-name masking at any depth", () => {
       metadata: { note: "user supplied secret-ish", nested: { deep: "value" } },
     };
     const out = redactor.redactValue(body) as Record<string, unknown>;
-    expect(out["name"]).toBe("[redacted]");
-    expect(out["email"]).toBe("[redacted]");
-    expect(out["phone"]).toBe("[redacted]");
+    expect(out["name"]).toBe("Test Person");
+    expect(out["email"]).toBe("test.person@example.com");
+    expect(out["phone"]).toBe("+15550001234");
     expect((out["device"] as Record<string, unknown>)["ip_address"]).toBe(
       "[redacted]",
     );
     const address = out["address"] as Record<string, unknown>;
-    for (const k of ["address1", "address2", "city", "state", "zip"]) {
-      expect(address[k]).toBe("[redacted]");
-    }
+    expect(address).toMatchObject({
+      address1: "1 Fake St",
+      address2: "Apt 2",
+      city: "Faketown",
+      state: "CA",
+      zip: "90000",
+    });
     const profile = out["compliance_profile"] as Record<string, unknown>;
-    for (const k of ["ssn", "ein", "dob", "legal_business_name", "website"]) {
+    for (const k of ["ssn", "ein", "dob"]) {
       expect(profile[k]).toBe("[redacted]");
     }
+    expect(profile["legal_business_name"]).toBe("Fake LLC");
+    expect(profile["website"]).toBe("https://fake.example.com");
     const rep = (profile["representatives"] as Record<string, unknown>[])[0]!;
-    expect(rep["name"]).toBe("[redacted]");
-    expect(rep["email"]).toBe("[redacted]");
-    expect(rep["phone"]).toBe("[redacted]");
-    // metadata: keys/structure preserved, every leaf masked.
+    expect(rep["name"]).toBe("Rep One");
+    expect(rep["email"]).toBe("rep@example.com");
+    expect(rep["phone"]).toBe("+15550009999");
     expect(out["metadata"]).toEqual({
-      note: "[redacted]",
-      nested: { deep: "[redacted]" },
+      note: "user supplied secret-ish",
+      nested: { deep: "value" },
     });
     // Non-sensitive fields survive untouched.
     expect(out["type"]).toBe("individual");
     expect(out["external_id"]).toBe("run-20260707T120000Z-a-ab12");
     const serialized = JSON.stringify(out);
-    for (const pii of [
-      "Test Person",
-      "test.person@example.com",
-      "+15550001234",
+    for (const credential of [
       "203.0.113.7",
       "000-00-0000",
-      "user supplied secret-ish",
     ]) {
-      expect(serialized).not.toContain(pii);
+      expect(serialized).not.toContain(credential);
     }
   });
 
-  it("masks fields by name inside arrays (charge GET customer_details, tan)", () => {
+  it("preserves customer details inside arrays but masks credential fields", () => {
     const out = redactor.redactValue([
       { customer_details: { name: "A B", email: "a@b.co", phone: "+1555" } },
       { tan: "123456" },
       { items: [{ account_number: FAKE_ACCOUNT }] },
     ]) as Array<Record<string, unknown>>;
     expect((out[0]!["customer_details"] as Record<string, unknown>)["name"]).toBe(
-      "[redacted]",
+      "A B",
     );
+    expect(
+      (out[0]!["customer_details"] as Record<string, unknown>)["email"],
+    ).toBe("a@b.co");
     expect(out[1]!["tan"]).toBe("[redacted]");
     expect(
       (out[2]!["items"] as Array<Record<string, unknown>>)[0]!["account_number"],
@@ -287,6 +292,22 @@ describe("redactValue / redactBody — field-name masking at any depth", () => {
       free_text: `preferred is ${SEEDED_BANK.preferred_account_number}`,
     });
     expectZeroSurvivals(out);
+  });
+
+  it("preserves response diagnostics unless they contain credentials or canaries", () => {
+    const out = redactor.redactValue({
+      error: {
+        status: 422,
+        title: "Validation Failed",
+        detail: "Cannot create paykey as customer is rejected.",
+        items: [{ reference: "customer_id", detail: "customer is rejected" }],
+      },
+    }) as { error: { detail: string; items: Array<{ detail: string }> } };
+
+    expect(out.error.detail).toBe(
+      "Cannot create paykey as customer is rejected.",
+    );
+    expect(out.error.items[0]!.detail).toBe("customer is rejected");
   });
 
   it("masks the key inside error echoes and nested strings", () => {

@@ -48,9 +48,9 @@ export type RunStartedEvent = z.infer<typeof RunStartedEventSchema>;
 
 /**
  * One per HTTP exchange, attempt-numbered, emitted by the Straddle client's
- * instrumented fetch. Bodies are ALWAYS redacted before the event is
- * constructed (spec §8) — this schema cannot enforce that; the redactor and
- * canary tests do.
+ * instrumented fetch. Bodies are ALWAYS credential-redacted before the event
+ * is constructed (spec §8) — this schema cannot enforce that; the redactor
+ * and canary tests do.
  */
 export const ApiExchangeEventSchema = z.object({
   ...eventBase,
@@ -60,8 +60,8 @@ export const ApiExchangeEventSchema = z.object({
   status: z.number().int(), // HTTP status of this attempt
   latency_ms: z.number().nonnegative(),
   attempt: z.number().int().min(1), // 1-based attempt number
-  request_body: z.unknown().optional(), // redacted
-  response_body: z.unknown().optional(), // redacted; absent for empty bodies (e.g. the 0-byte 401)
+  request_body: z.unknown().optional(), // credential-redacted
+  response_body: z.unknown().optional(), // credential-redacted; absent for empty bodies (e.g. the 0-byte 401)
   api_request_id: z.string().optional(), // meta.api_request_id — the only trace id (api-notes §3)
 });
 export type ApiExchangeEvent = z.infer<typeof ApiExchangeEventSchema>;

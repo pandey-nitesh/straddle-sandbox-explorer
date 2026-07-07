@@ -38,7 +38,7 @@ export type IdentityReviewSummary = z.infer<typeof IdentityReviewSummarySchema>;
 export const ApiRefusalSchema = z.object({
   attempted_action: z.enum(["create_paykey", "create_charge"]), // M0 resolved: create_paykey (api-notes §10)
   http_status: z.number(), // observed 422 for Scenario E
-  error_body: z.unknown(), // Straddle's body, verbatim post-redaction
+  error_body: z.unknown(), // Straddle's body, verbatim post credential-redaction
 });
 export type ApiRefusal = z.infer<typeof ApiRefusalSchema>;
 

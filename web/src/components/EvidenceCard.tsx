@@ -46,7 +46,7 @@ export function EvidenceRows({ rows }: { rows: EvidenceRow[] }) {
 
 export interface EvidenceCardProps {
   rows: EvidenceRow[];
-  /** Verbatim (already-redacted) refusal body, rendered as a JSON block. */
+  /** Verbatim (already credential-redacted) refusal body, rendered as a JSON block. */
   refusalBody?: unknown;
 }
 

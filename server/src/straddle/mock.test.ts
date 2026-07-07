@@ -369,7 +369,7 @@ describe("api.exchange telemetry", () => {
     expect(new Set(seqs).size).toBe(seqs.length);
   });
 
-  it("emitted bodies are redacted: no seeded bank values, paykey tokens, or customer PII survive", async () => {
+  it("emitted bodies preserve sandbox evidence but redact credentials and bank canaries", async () => {
     const { clock, client, events, runId } = makeHarness("a");
     const customer = await client.createCustomer({
       name: "Jane Mock",
@@ -408,12 +408,13 @@ describe("api.exchange telemetry", () => {
     expect(serialized).not.toContain(SEEDED_BANK.blocked_account_number);
     // The credential-like paykey token must not survive (api-notes §11).
     expect(serialized).not.toContain(paykey.paykey);
-    // PII field values must not survive.
-    expect(serialized).not.toContain("Jane Mock");
-    expect(serialized).not.toContain("jane.mock@example.com");
-    expect(serialized).not.toContain("+15555550100");
+    // Non-credential sandbox evidence survives for the Wire inspector.
+    expect(serialized).toContain("Jane Mock");
+    expect(serialized).toContain("jane.mock@example.com");
+    expect(serialized).toContain("+15555550100");
+    expect(serialized).toContain("secret-metadata-value");
+    // Hard identifiers still do not survive.
     expect(serialized).not.toContain("10.1.2.3");
-    expect(serialized).not.toContain("secret-metadata-value");
     // Results returned to the ENGINE stay usable: the token is intact there.
     expect(paykey.paykey).toMatch(/^[0-9a-f]{8}\.\d{2}\.[0-9a-f]{64}$/);
     // external_id (= run_id) is explicitly safe evidence and survives.

@@ -6,11 +6,14 @@
  * anything that reaches pino anyway:
  *
  * - `redact` paths cover the authorization header (every casing we can
- *   express) and the api-notes §11 sensitive-field inventory
- *   (account/routing/paykey/tan/ssn/ein/dob/ip_address + PII fields) at the
- *   nesting depths pino's fast-redact can express (top level, one wildcard
- *   parent, `*.headers.*`, `data.*.*`). fast-redact supports at most one
- *   wildcard per path, so arbitrary depth is Layer 1's job, not this one's.
+ *   express) and a stricter accidental-log inventory
+ *   (account/routing/paykey/tan/ssn/ein/dob/ip_address + customer evidence
+ *   fields) at the nesting depths pino's fast-redact can express (top level,
+ *   one wildcard parent, `*.headers.*`, `data.*.*`). UI/event payloads use
+ *   Layer 1's narrower credential-redaction policy; logger defense-in-depth
+ *   can be more conservative because raw HTTP bodies are never intentionally
+ *   logged. fast-redact supports at most one wildcard per path, so arbitrary
+ *   depth is Layer 1's job, not this one's.
  * - Serializers restrict `req`/`res`/`exchange` objects to method, URL,
  *   status, latency, attempt, and run/scenario IDs — raw HTTP bodies and
  *   headers are never logged anywhere (spec §8).
@@ -43,9 +46,9 @@ const AUTH_KEYS = [
 ] as const;
 
 /**
- * Sensitive field names per api-notes §11 (mask by name, any casing the API
- * actually uses — the wire is snake_case). `paykey` is the credential-like
- * token; `metadata` is censored wholesale (arbitrary user kv).
+ * Accidental-log field names. `paykey` is the credential-like token;
+ * `metadata` is censored wholesale when someone logs raw objects by mistake,
+ * even though metadata is preserved in credential-redacted UI/event payloads.
  * NOTE: bare `name` is included; do not rely on pino's `name` option (we
  * never set it) and expect `err.name`-style fields to be censored — an
  * accepted cost of defense in depth.

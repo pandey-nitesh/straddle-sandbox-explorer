@@ -87,7 +87,7 @@ describe("StartupState", () => {
     expectNoExternalFontRequests();
   });
 
-  it("invalid key with a body: renders the redacted body verbatim as JSON", () => {
+  it("invalid key with a body: renders the credential-redacted body verbatim as JSON", () => {
     render(
       <StartupState
         state="invalid"

@@ -98,10 +98,10 @@ export interface HealthResult {
   ok: boolean;
   /** HTTP status of the ping (200 when ok, 401 for an invalid key, …). */
   status: number;
-  /** Present when not ok; human-readable, already redaction-safe. */
+  /** Present when not ok; human-readable, already credential-redaction-safe. */
   message?: string;
   /**
-   * The Straddle error body (redacted), when the failing response HAD one.
+   * The Straddle error body (credential-redacted), when the failing response HAD one.
    * Absent for the documented empty-body 401 (spec §18.5) — consumers render
    * a status line instead. Never a synthesized message: verbatim testimony
    * only.

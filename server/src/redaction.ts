@@ -11,8 +11,12 @@
  *   characters when the value is long enough to stay non-reversible:
  *   `"987654321"` → `"•••4321"`. Values shorter than 8 characters are fully
  *   masked to `"[redacted]"` (last-4 of a short value would leak most of it).
- * - Everything else (key material, the paykey token, PII fields, metadata
- *   leaf values, sensitive headers) masks to the fixed string `"[redacted]"`.
+ * - Everything else credential-like (key material, the paykey token, TAN,
+ *   SSN/EIN/DOB, IP address, sensitive headers) masks to the fixed string
+ *   `"[redacted]"`.
+ * - Non-credential sandbox evidence (customer names, email/phone, addresses,
+ *   metadata, review/status details, and error diagnostics) is preserved for
+ *   the UI unless it contains one of the string-level secret/canary patterns.
  * - The seeded bank constants (public docs examples, but canary values per
  *   spec §8) are additionally masked WHEREVER they appear inside strings,
  *   not only under their field names — defense in depth for error echoes.
@@ -37,18 +41,16 @@ import { SEEDED_BANK_CANARY_VALUES } from "@sse/shared";
 const LAST4_FIELD_NAMES = new Set(["account_number", "routing_number"]);
 
 /**
- * Fields fully masked by NAME (case-insensitive, any depth, arrays included).
+ * Credential-sensitive fields fully masked by NAME (case-insensitive, any
+ * depth, arrays included).
  * - `paykey`: the credential-like token — unmasked in the bridge create
  *   response, masked by Straddle in charge responses; we mask it everywhere.
  * - `tan`: POST /v1/bridge/tan (unused by us; masked anyway per api-notes).
  * - `ssn`, `ein`, `dob`: compliance_profile.* (if ever sent).
  * - `ip_address`: device.ip_address (raw in our requests).
- * - PII: name/email/phone, address parts, compliance_profile business fields.
- *   NOTE `state`/`city`/`zip`/`website` are masked ANYWHERE they appear by
- *   name — deliberate over-redaction; under-redaction is the only failure
- *   mode that matters here.
- * Explicitly SAFE and kept (api-notes §11): `label`, `institution_name`
- * (public bank name + last-4), `external_id` (= run_id).
+ * Explicitly SAFE and kept as sandbox evidence: customer name/email/phone,
+ * address fields, review/status details, metadata, `label`,
+ * `institution_name`, and `external_id` (= run_id).
  */
 const FULL_REDACT_FIELD_NAMES = new Set([
   "paykey",
@@ -57,28 +59,12 @@ const FULL_REDACT_FIELD_NAMES = new Set([
   "ein",
   "dob",
   "ip_address",
-  "name",
-  "email",
-  "phone",
-  "address1",
-  "address2",
-  "city",
-  "state",
-  "zip",
-  "legal_business_name",
-  "website",
   // Key material should never appear in a JSON body, but error echoes exist
   // in principle — mask these field names too as defense in depth.
   "authorization",
   "api_key",
   "apikey",
 ]);
-
-/**
- * Fields whose entire SUBTREE has its leaf values masked while the structure
- * (keys, array shape) is preserved: `metadata.*` is arbitrary user kv.
- */
-const SUBTREE_REDACT_FIELD_NAMES = new Set(["metadata"]);
 
 /**
  * Header names masked outright (case-insensitive). Beyond this exact list, a
@@ -219,30 +205,6 @@ export function createRedactor(options: CreateRedactorOptions = {}): Redactor {
     return out;
   }
 
-  /** Fully masks a subtree's leaf values while preserving its structure. */
-  function redactSubtree(value: unknown, seen: WeakSet<object>): unknown {
-    if (value === null || value === undefined) return value;
-    if (Array.isArray(value)) {
-      if (seen.has(value)) return "[circular]";
-      seen.add(value);
-      const out = value.map((item) => redactSubtree(item, seen));
-      seen.delete(value);
-      return out;
-    }
-    if (typeof value === "object") {
-      if (seen.has(value)) return "[circular]";
-      seen.add(value);
-      const out: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(value)) {
-        out[k] = redactSubtree(v, seen);
-      }
-      seen.delete(value);
-      return out;
-    }
-    // Leaf (string, number, boolean, bigint, …) inside a sensitive subtree.
-    return MASK;
-  }
-
   function walk(value: unknown, seen: WeakSet<object>): unknown {
     if (typeof value === "string") return redactString(value);
     if (value === null || typeof value !== "object") return value;
@@ -261,8 +223,6 @@ export function createRedactor(options: CreateRedactorOptions = {}): Redactor {
           out[key] = MASK;
         } else if (LAST4_FIELD_NAMES.has(lower)) {
           out[key] = typeof v === "string" ? maskLast4(v) : MASK;
-        } else if (SUBTREE_REDACT_FIELD_NAMES.has(lower)) {
-          out[key] = redactSubtree(v, seen);
         } else {
           out[key] = walk(v, seen);
         }
