@@ -16,5 +16,6 @@ Live-sandbox findings from the M0 spike that contradict the original spec assump
 - **`config.balance_check` is required on charge creation** and pinned to `"disabled"` in scenario definitions.
 - **No `Retry-After`/`X-RateLimit-*` headers observed** — retries honor `Retry-After` if present but never depend on it.
 - Error envelopes live under a top-level `error` key; validation failures arrive in two shapes (400 PascalCase refs / 422 lowercase refs); resource timestamps vary in precision, so shared schemas validate datetimes leniently.
+- **Wave 2 adapter uses direct `fetch` behind the `StraddleClient` boundary.** M0 selected the SDK, but the runtime adapter currently calls the M0-confirmed endpoints directly so retry timing and `api.exchange` telemetry stay under local control. The SDK remains pinned and isolated as a future swap target.
 
 *Unofficial developer demo — not affiliated with Straddle Payments Inc.*

@@ -12,7 +12,9 @@
   ],
   "scripts": {
     "typecheck": "tsc -p shared && tsc -p shared/tsconfig.test.json && tsc -p server",
-    "test": "vitest run"
+    "test": "vitest run",
+    "scenarios": "tsx server/src/cli.ts",
+    "check:secrets": "tsx scripts/check-secrets.ts"
   },
   "devDependencies": {
     "tsx": "^4.20.3",

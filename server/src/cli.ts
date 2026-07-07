@@ -1,0 +1,133 @@
+import { createBus } from "./engine/bus.js";
+import { attachRecorder } from "./engine/recorder.js";
+import { runScenarios } from "./engine/runner.js";
+import { parseScenarioSelection } from "./engine/scenarios.js";
+import { loadConfig } from "./config.js";
+import { createStraddleClient } from "./straddle/client.js";
+import { createMockStraddleClient } from "./straddle/mock.js";
+
+interface CliArgs {
+  all: boolean;
+  scenarios: string[];
+  serial: boolean;
+  mock: boolean;
+  reportPath: string;
+  recordingDir: string;
+}
+
+export async function main(argv = process.argv.slice(2)): Promise<void> {
+  const args = parseArgs(argv);
+  const config = loadConfig();
+  const bus = createBus();
+  attachRecorder(bus, args.recordingDir);
+  const scenarioIds = parseScenarioSelection({
+    all: args.all,
+    scenarios: args.scenarios,
+  });
+
+  if (!args.mock && !config.keyPresent) {
+    throw new Error(
+      "STRADDLE_API_KEY is missing. Set it in the environment/.env or pass --mock.",
+    );
+  }
+
+  await runScenarios({
+    scenarios: scenarioIds,
+    concurrency: args.serial ? "serial" : "concurrent",
+    bus,
+    recordingDir: args.recordingDir,
+    reportPath: args.reportPath,
+    pollPolicy: config.pollPolicyOverrides,
+    clientFactory: (context) =>
+      args.mock
+        ? createMockStraddleClient({
+            bus,
+            clock: context.clock,
+            context: {
+              run_id: context.run_id,
+              scenario_id: context.scenario_id,
+            },
+          })
+        : createStraddleClient({
+            apiKey: config.straddleApiKey ?? "",
+            bus,
+            clock: context.clock,
+            context: {
+              run_id: context.run_id,
+              scenario_id: context.scenario_id,
+            },
+          }),
+  });
+
+  // Keep stdout human-safe and terse; detailed evidence lives in report/runs.
+  console.log(`wrote ${args.reportPath}`);
+}
+
+function parseArgs(argv: readonly string[]): CliArgs {
+  const out: CliArgs = {
+    all: false,
+    scenarios: [],
+    serial: false,
+    mock: false,
+    reportPath: "report.json",
+    recordingDir: "runs",
+  };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    switch (arg) {
+      case "--all":
+        out.all = true;
+        break;
+      case "--scenario": {
+        const value = argv[++i];
+        if (value === undefined) throw new Error("--scenario requires a value");
+        out.scenarios.push(value);
+        break;
+      }
+      case "--serial":
+        out.serial = true;
+        break;
+      case "--mock":
+        out.mock = true;
+        break;
+      case "--report": {
+        const value = argv[++i];
+        if (value === undefined) throw new Error("--report requires a value");
+        out.reportPath = value;
+        break;
+      }
+      case "--recording-dir": {
+        const value = argv[++i];
+        if (value === undefined) throw new Error("--recording-dir requires a value");
+        out.recordingDir = value;
+        break;
+      }
+      case "--help":
+      case "-h":
+        printHelp();
+        process.exit(0);
+      default:
+        throw new Error(`Unknown argument: ${arg}`);
+    }
+  }
+  return out;
+}
+
+function printHelp(): void {
+  console.log(`Usage: npm run scenarios -- [--all | --scenario a] [--mock] [--serial]
+
+Options:
+  --all                  Run A-E (default when no --scenario is passed)
+  --scenario <id>        Run one scenario; repeatable
+  --mock                 Use the scripted mock client instead of the live sandbox
+  --serial               Run scenarios serially (P1 behavior, useful for debugging)
+  --report <path>        Report output path (default: report.json)
+  --recording-dir <dir>  JSONL recording directory (default: runs)`);
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}
