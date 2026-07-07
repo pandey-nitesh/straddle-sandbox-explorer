@@ -1,9 +1,12 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { ExchangeLog, type ExchangeEntry } from "./ExchangeLog";
 import { formatBackoff, truncateMiddle } from "./format";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 const ENTRIES: ExchangeEntry[] = [
   {
@@ -39,6 +42,36 @@ describe("ExchangeLog", () => {
     const limited = screen.getByText("429");
     expect(limited.getAttribute("data-tone")).toBe("fail");
     expect(limited.className).toContain("text-status-fail");
+  });
+
+  it("shows the full path on hover title and copies the untruncated path", () => {
+    const writeText = vi.fn();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    const path =
+      "/v1/charges/019f3e03-a142-7b63-aaa1-e48381fc9f9b";
+
+    render(
+      <ExchangeLog
+        entries={[
+          {
+            id: "long-path",
+            method: "GET",
+            path,
+            status: 200,
+            latencyMs: 83,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText(truncateMiddle(path))).toBeTruthy();
+    expect(screen.getAllByTitle(path).length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: `Copy path: ${path}` }));
+    expect(writeText).toHaveBeenCalledWith(path);
   });
 
   it("renders retries as indented sub-entries labeled attempt · backoff", () => {

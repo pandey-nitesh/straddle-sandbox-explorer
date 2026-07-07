@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { CopyValueButton } from "./CopyValueButton";
 import { JsonBlock } from "./JsonBlock";
 import { formatBackoff, truncateMiddle } from "./format";
 
@@ -56,22 +57,31 @@ function Exchange({ entry }: { entry: ExchangeEntry }) {
 
   return (
     <li className="border-b border-edge pb-2">
-      <button
-        type="button"
-        aria-expanded={open}
-        disabled={!expandable}
-        onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center gap-2 rounded-inset px-1 py-1 text-left hover:bg-surface-inset disabled:hover:bg-transparent"
-      >
-        <span className="wire-quote font-semibold text-fg">{entry.method}</span>
-        <span className="wire-quote min-w-0 flex-1 truncate text-fg-secondary">
-          {truncateMiddle(entry.path)}
-        </span>
-        <StatusCodeChip status={entry.status} />
-        <span className="wire-quote shrink-0 text-xs text-fg-muted">
-          {Math.round(entry.latencyMs)}ms
-        </span>
-      </button>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          aria-expanded={open}
+          disabled={!expandable}
+          title={entry.path}
+          onClick={() => setOpen((o) => !o)}
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-inset px-1 py-1 text-left hover:bg-surface-inset disabled:hover:bg-transparent"
+        >
+          <span className="wire-quote font-semibold text-fg">
+            {entry.method}
+          </span>
+          <span
+            className="wire-quote min-w-0 flex-1 truncate text-fg-secondary"
+            title={entry.path}
+          >
+            {truncateMiddle(entry.path)}
+          </span>
+          <StatusCodeChip status={entry.status} />
+          <span className="wire-quote shrink-0 text-xs text-fg-muted">
+            {Math.round(entry.latencyMs)}ms
+          </span>
+        </button>
+        <CopyValueButton label="path" value={entry.path} />
+      </div>
 
       {/* Retry attempts as indented sub-entries — the client's 429/5xx
           behavior made visible (acceptance criterion 7). */}
