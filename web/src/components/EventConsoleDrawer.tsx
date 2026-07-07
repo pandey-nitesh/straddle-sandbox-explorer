@@ -5,10 +5,16 @@ export interface EventConsoleEntry {
   line: string;
 }
 
-export function EventConsoleDrawer({ entries }: { entries: EventConsoleEntry[] }) {
-  const [open, setOpen] = useState(false);
+export function EventConsoleDrawer({
+  entries,
+  defaultOpen = false,
+}: {
+  entries: EventConsoleEntry[];
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="border-t border-edge pt-2">
+    <div>
       <button
         type="button"
         aria-expanded={open}
@@ -19,7 +25,11 @@ export function EventConsoleDrawer({ entries }: { entries: EventConsoleEntry[] }
         <span className="wire-quote text-xs text-fg-muted">{entries.length}</span>
       </button>
       {open && (
-        <pre className="max-h-48 overflow-auto border-t border-edge p-3 text-xs text-fg-secondary">
+        <pre
+          tabIndex={0}
+          aria-label="Event console lines"
+          className="max-h-[32rem] overflow-auto border-t border-edge p-3 text-xs text-fg-secondary"
+        >
           {entries.map((entry) => entry.line).join("\n")}
         </pre>
       )}

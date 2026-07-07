@@ -7,14 +7,11 @@ import {
   type FetchLike,
 } from "./api";
 import { AppShell } from "./components/AppShell";
-import { DetailPanel } from "./components/DetailPanel";
-import { EventConsoleDrawer } from "./components/EventConsoleDrawer";
-import { ExchangeLog } from "./components/ExchangeLog";
-import { InspectorPanel } from "./components/InspectorPanel";
 import { ReplayPanel } from "./components/ReplayPanel";
 import { RunSummary } from "./components/RunSummary";
 import { ScenarioList } from "./components/ScenarioList";
 import { Timeline } from "./components/Timeline";
+import { WireTabs } from "./components/WireTabs";
 import { useNow } from "./components/useNow";
 import {
   createEventStore,
@@ -178,12 +175,12 @@ export function Dashboard({ fetchFn }: DashboardProps) {
       }
       wire={
         run === null || detailPanel === undefined ? undefined : (
-          <div className="space-y-4">
-            <DetailPanel {...detailPanel} />
-            <InspectorPanel entries={inspectorEntries} />
-            <EventConsoleDrawer entries={eventConsoleEntries} />
-            {exchanges.length > 0 && <ExchangeLog entries={exchanges} />}
-          </div>
+          <WireTabs
+            details={detailPanel}
+            events={inspectorEntries}
+            consoleEntries={eventConsoleEntries}
+            exchanges={exchanges}
+          />
         )
       }
       summary={

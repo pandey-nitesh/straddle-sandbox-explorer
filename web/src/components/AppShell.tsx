@@ -45,10 +45,10 @@ function Pane({
     <section
       aria-label={title}
       aria-live={live === true ? "polite" : undefined}
-      className="flex min-h-0 flex-col overflow-y-auto rounded-card bg-surface-card p-4 shadow-card"
+      className="flex min-h-0 flex-col overflow-hidden rounded-card bg-surface-card p-4 shadow-card"
     >
       <h2 className="pane-header">{title}</h2>
-      <div className="mt-3 flex-1">{children}</div>
+      <div className="mt-3 min-h-0 flex-1 overflow-y-auto">{children}</div>
     </section>
   );
 }
