@@ -9,6 +9,7 @@ export interface RunOverviewRow {
 export interface RunOverviewProps {
   label: string;
   purpose: string;
+  flow?: readonly string[];
   chip: Exclude<ChipVariant, "idle">;
   chipLabel?: string;
   rows: RunOverviewRow[];
@@ -17,6 +18,7 @@ export interface RunOverviewProps {
 export function RunOverview({
   label,
   purpose,
+  flow,
   chip,
   chipLabel,
   rows,
@@ -30,6 +32,22 @@ export function RunOverview({
         </div>
         <StatusChip variant={chip}>{chipLabel}</StatusChip>
       </div>
+      {flow !== undefined && flow.length > 0 && (
+        <div className="mt-3 rounded-inset border border-edge bg-surface-card p-3">
+          <h4 className="pane-header mb-2">Flow</h4>
+          <ol className="space-y-1.5">
+            {flow.map((step, index) => (
+              <li
+                key={`${index}:${step}`}
+                className="grid grid-cols-[1.25rem_minmax(0,1fr)] gap-2 text-xs leading-5 text-fg-secondary"
+              >
+                <span className="wire-quote text-fg-muted">{index + 1}</span>
+                <span className="min-w-0 break-words">{step}</span>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
       <dl className="mt-3 space-y-2">
         {rows.map((row) => (
           <div

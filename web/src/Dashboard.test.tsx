@@ -25,6 +25,11 @@ const SCENARIO_E: ScenarioDef = {
   id: "e",
   label: "E. Rejected identity",
   purpose: "Rejected customer blocks downstream paykey creation.",
+  flow: [
+    "Create a rejected customer.",
+    "Capture the rejected review.",
+    "Attempt paykey creation and preserve the refusal.",
+  ],
   outcomes: { customer: "rejected" },
   requiredObservations: [
     { kind: "customer_review", status: "rejected" },
@@ -292,6 +297,10 @@ describe("Dashboard wiring", () => {
     const lifecycle = screen.getByRole("region", { name: "Lifecycle" });
     expect(lifecycle.textContent).toContain(run);
     expect(lifecycle.textContent).toContain(SCENARIO_E.purpose);
+    expect(lifecycle.textContent).toContain("Create a rejected customer.");
+    expect(lifecycle.textContent).toContain(
+      "Attempt paykey creation and preserve the refusal.",
+    );
     expect(lifecycle.textContent).toContain(
       "customer rejected; refusal after create_paykey",
     );

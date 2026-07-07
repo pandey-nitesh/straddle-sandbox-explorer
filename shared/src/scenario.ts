@@ -70,6 +70,7 @@ export const ScenarioDefSchema = z.object({
   id: ScenarioIdSchema,
   label: z.string(),
   purpose: z.string(),
+  flow: z.array(z.string()).min(1).optional(),
   outcomes: z.object({
     customer: z.string().optional(),
     paykey: z.string().optional(),

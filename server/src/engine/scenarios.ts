@@ -22,6 +22,11 @@ export const RUNNABLE_SCENARIOS = [
     id: "a",
     label: "A. Happy path",
     purpose: "Verified customer, active paykey, paid charge.",
+    flow: [
+      "Create a verified sandbox customer.",
+      "Create an active bank-account paykey for that customer.",
+      "Create a charge with the paid outcome and watch it settle successfully.",
+    ],
     outcomes: { customer: "verified", paykey: "active", charge: "paid" },
     requiredObservations: [{ kind: "terminal_status", status: "paid" }],
   },
@@ -29,6 +34,11 @@ export const RUNNABLE_SCENARIOS = [
     id: "b",
     label: "B. Insufficient funds",
     purpose: "Verified customer with an R01 bank-decline failure.",
+    flow: [
+      "Create a verified customer and active paykey.",
+      "Create a charge using the insufficient-funds sandbox outcome.",
+      "Poll the charge until the bank decline appears as failed with return code R01.",
+    ],
     outcomes: {
       customer: "verified",
       paykey: "active",
@@ -42,6 +52,11 @@ export const RUNNABLE_SCENARIOS = [
     id: "c",
     label: "C. Reversal",
     purpose: "Mock/replay reversal evidence: paid before reversed.",
+    flow: [
+      "Create a verified customer and active paykey.",
+      "Create a charge using the reversal sandbox outcome.",
+      "In mock and replay mode, observe paid first and then reversed so the reversal order is explicit.",
+    ],
     outcomes: {
       customer: "verified",
       paykey: "active",
@@ -55,6 +70,11 @@ export const RUNNABLE_SCENARIOS = [
     id: "d",
     label: "D. Risk cancellation",
     purpose: "Charge cancelled with structured reason detail.",
+    flow: [
+      "Create a verified customer and active paykey.",
+      "Create a charge using the fraud-risk cancellation outcome.",
+      "Observe the terminal cancellation and keep the structured reason detail as evidence.",
+    ],
     outcomes: {
       customer: "verified",
       paykey: "active",
@@ -72,6 +92,11 @@ export const RUNNABLE_SCENARIOS = [
     id: "e",
     label: "E. Rejected identity",
     purpose: "Rejected customer blocks downstream paykey creation.",
+    flow: [
+      "Create a customer with the rejected identity sandbox outcome.",
+      "Capture the rejected review status and identity evidence.",
+      "Attempt paykey creation anyway and preserve the API refusal body as proof of the block.",
+    ],
     outcomes: { customer: "rejected", paykey: "active" },
     requiredObservations: [
       { kind: "customer_review", status: "rejected" },
@@ -98,6 +123,11 @@ const SCENARIO_C_LIVE = ScenarioDefSchema.parse({
   label: "C. Reversal",
   purpose:
     "Live deviation evidence: failed with the reversal R-code after the ~4-minute reversal window (spec §18.1).",
+  flow: [
+    "Create a verified customer and active paykey.",
+    "Create a charge using the reversal sandbox outcome.",
+    "In live mode, the sandbox reports the documented deviation: terminal failed with R01 after the reversal window.",
+  ],
   outcomes: {
     customer: "verified",
     paykey: "active",
@@ -113,6 +143,11 @@ const SCENARIO_D_LIVE = ScenarioDefSchema.parse({
   label: "D. Risk cancellation",
   purpose:
     "Live deviation evidence: watchtower blocks the charge as failed with structured reason detail (spec §18.8).",
+  flow: [
+    "Create a verified customer and active paykey.",
+    "Create a charge using the fraud-risk cancellation outcome.",
+    "In live mode, watchtower reports the documented deviation: failed with structured risk detail.",
+  ],
   outcomes: {
     customer: "verified",
     paykey: "active",

@@ -233,6 +233,9 @@ export function projectRunOverview(run: RunState): RunOverviewProps {
   return {
     label: run.scenario.label,
     purpose: run.scenario.purpose,
+    ...(run.scenario.flow !== undefined && run.scenario.flow.length > 0
+      ? { flow: run.scenario.flow }
+      : {}),
     chip: run.chip,
     rows,
   };

@@ -135,6 +135,10 @@ const scenarioC: ScenarioDef = {
   id: "c",
   label: "Reversal",
   purpose: "Watch a payment settle and then un-settle.",
+  flow: [
+    "Create a verified customer and active paykey.",
+    "Create a charge that settles before it reverses.",
+  ],
   outcomes: {
     customer: "verified",
     paykey: "active",
@@ -170,6 +174,12 @@ describe("ScenarioDefSchema", () => {
       ScenarioDefSchema.safeParse({ ...scenarioC, requiredObservations: [] })
         .success,
     ).toBe(false);
+  });
+
+  it("rejects an empty flow array when flow is present", () => {
+    expect(ScenarioDefSchema.safeParse({ ...scenarioC, flow: [] }).success).toBe(
+      false,
+    );
   });
 
   it("rejects missing outcomes object and bad id", () => {
