@@ -3,7 +3,13 @@ import { createHttpServer } from "./http/server.js";
 
 export async function main(): Promise<void> {
   const config = loadConfig();
-  const app = await createHttpServer({ config });
+  // QA/dev escape hatch (Wave 4): MOCK_MODE=1 serves the scripted mock client
+  // instead of the live sandbox — same wiring as createHttpServer({ mockMode }).
+  const mockMode = /^(1|true)$/i.test(process.env["MOCK_MODE"] ?? "");
+  const app = await createHttpServer({
+    config,
+    ...(mockMode ? { mockMode: true } : {}),
+  });
   await app.listen({ port: config.port, host: "127.0.0.1" });
 }
 

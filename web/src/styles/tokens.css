@@ -1,0 +1,47 @@
+/*
+ * Design tokens — single source (design.md §3).
+ * Two layers, deliberately separated:
+ *   - brand layer: D0-CALIBRATE placeholders with verified-fingerprint fallbacks
+ *   - semantic status layer: FIXED by PRD FR-2 payment semantics; never calibrated
+ * Components reference these custom properties (directly or via the Tailwind
+ * theme mapping in app.css) — never raw hexes.
+ */
+:root {
+  /* ---- Brand layer — D0 CALIBRATE; fallbacks shown ---- */
+  --brand-accent:        #14b8a6;  /* CALIBRATE: primary CTA/link. Fallback: the
+                                      teal Straddle's own tooling uses */
+  --brand-accent-strong: #0f766e;  /* CALIBRATE: hover/active (teal-700 fallback) */
+  --brand-ink:           #0f172a;  /* CALIBRATE: headline/body ink (slate-900) */
+
+  /* ---- Surfaces (light theme; design.md §8 for rationale) ---- */
+  --surface-app:     #f8fafc;      /* slate-50 */
+  --surface-card:    #ffffff;
+  --surface-inset:   #f1f5f9;      /* slate-100: JSON blocks, console */
+  --border:          #e2e8f0;      /* slate-200 */
+  --border-strong:   #cbd5e1;      /* slate-300: selected/focused cards */
+  --text-primary:    var(--brand-ink);
+  --text-secondary:  #475569;      /* slate-600 */
+  --text-muted:      #94a3b8;      /* slate-400: timestamps, seq numbers */
+
+  /* ---- Semantic status layer — FIXED, encodes PRD FR-2. Do not calibrate. ---- */
+  --status-inflight:    #64748b;   /* slate-500 · created/scheduled/pending/on_hold */
+  --status-paid:        #16a34a;   /* green-600 · TERMINAL paid only */
+  --status-provisional: #d97706;   /* amber-600 · paid while watching for reversal */
+  --status-failed:      #dc2626;   /* red-600  · failed and reversed */
+  --status-cancelled:   #64748b;   /* slate-500, hollow treatment (design §6.3) */
+  --status-pass:        var(--status-paid);
+  --status-fail:        var(--status-failed);
+
+  /* ---- Exchange-log provenance accents (verified Straddle fingerprint) ---- */
+  --wire-client: #14b8a6;          /* teal-500 · our requests — matches Straddle's
+                                      own client-log label color */
+  --wire-server: #a855f7;          /* purple-500 · Straddle's responses — matches
+                                      their server-log label color */
+
+  /* ---- Shape, space, elevation ---- */
+  --radius-card: 12px;
+  --radius-chip: 9999px;
+  --radius-inset: 8px;
+  --space-unit: 4px;               /* 4-pt grid; components use ×2..×8 */
+  --shadow-card: 0 1px 2px rgb(15 23 42 / 0.06), 0 1px 3px rgb(15 23 42 / 0.10);
+}

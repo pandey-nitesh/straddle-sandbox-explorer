@@ -82,6 +82,47 @@ export const RUNNABLE_SCENARIOS = [
 
 export const RUNNABLE_SCENARIO_IDS = RUNNABLE_SCENARIOS.map((s) => s.id);
 
+/**
+ * Spec §18.1/§18.8: the live sandbox never surfaces `reversed` (C) or
+ * `cancelled` (D) — those PRD terminals exist only in the mock/replay
+ * "contract" mode. "live" mode swaps C and D for defs asserting the
+ * documented deviation evidence: C = terminal `failed` + the reversal's
+ * R-code (the ~4-minute reversal window stays visible in transition
+ * timestamps); D = terminal `failed` + watchtower's structured reason
+ * detail (`payment_blocked`, ~7 s).
+ */
+export type ScenarioMode = "contract" | "live";
+
+const SCENARIO_C_LIVE = ScenarioDefSchema.parse({
+  id: "c",
+  label: "C. Reversal",
+  purpose:
+    "Live deviation evidence: failed with the reversal R-code after the ~4-minute reversal window (spec §18.1).",
+  outcomes: {
+    customer: "verified",
+    paykey: "active",
+    charge: "reversed_insufficient_funds",
+  },
+  requiredObservations: [
+    { kind: "terminal_status", status: "failed", returnCode: "R01" },
+  ],
+}) as RunnableScenarioDef;
+
+const SCENARIO_D_LIVE = ScenarioDefSchema.parse({
+  id: "d",
+  label: "D. Risk cancellation",
+  purpose:
+    "Live deviation evidence: watchtower blocks the charge as failed with structured reason detail (spec §18.8).",
+  outcomes: {
+    customer: "verified",
+    paykey: "active",
+    charge: "cancelled_for_fraud_risk",
+  },
+  requiredObservations: [
+    { kind: "terminal_status", status: "failed", requireReasonDetail: true },
+  ],
+}) as RunnableScenarioDef;
+
 const scenarioMap = new Map<RunnableScenarioId, RunnableScenarioDef>(
   RUNNABLE_SCENARIOS.map((scenario) => [
     scenario.id,
@@ -89,12 +130,20 @@ const scenarioMap = new Map<RunnableScenarioId, RunnableScenarioDef>(
   ]),
 );
 
-export function getScenario(id: ScenarioId): RunnableScenarioDef | undefined {
+export function getScenario(
+  id: ScenarioId,
+  mode: ScenarioMode = "contract",
+): RunnableScenarioDef | undefined {
+  if (id === "c" && mode === "live") return SCENARIO_C_LIVE;
+  if (id === "d" && mode === "live") return SCENARIO_D_LIVE;
   return scenarioMap.get(id as RunnableScenarioId);
 }
 
-export function requireScenario(id: ScenarioId): RunnableScenarioDef {
-  const scenario = getScenario(id);
+export function requireScenario(
+  id: ScenarioId,
+  mode: ScenarioMode = "contract",
+): RunnableScenarioDef {
+  const scenario = getScenario(id, mode);
   if (scenario === undefined) {
     throw new Error(`Scenario ${id} is not runnable in P0`);
   }

@@ -100,6 +100,13 @@ export interface HealthResult {
   status: number;
   /** Present when not ok; human-readable, already redaction-safe. */
   message?: string;
+  /**
+   * The Straddle error body (redacted), when the failing response HAD one.
+   * Absent for the documented empty-body 401 (spec §18.5) — consumers render
+   * a status line instead. Never a synthesized message: verbatim testimony
+   * only.
+   */
+  error_body?: unknown;
 }
 
 // ---------------------------------------------------------------------------

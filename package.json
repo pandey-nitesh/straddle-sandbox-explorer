@@ -8,17 +8,19 @@
   },
   "workspaces": [
     "shared",
-    "server"
+    "server",
+    "web"
   ],
   "scripts": {
-    "typecheck": "tsc -p shared && tsc -p shared/tsconfig.test.json && tsc -p server",
+    "typecheck": "tsc -p shared && tsc -p shared/tsconfig.test.json && tsc -p server && tsc -p web",
     "test": "vitest run",
-    "dev": "tsx watch server/src/index.ts",
-    "start": "tsx server/src/index.ts",
+    "dev": "tsx scripts/dev.ts",
+    "start": "tsx scripts/start.ts",
     "scenarios": "tsx server/src/cli.ts",
     "check:secrets": "tsx scripts/check-secrets.ts"
   },
   "devDependencies": {
+    "playwright": "^1.61.1",
     "tsx": "^4.20.3",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"

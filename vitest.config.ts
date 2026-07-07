@@ -4,7 +4,12 @@ import { defineConfig } from "vitest/config";
 // Per-workspace settings live in <workspace>/vitest.config.ts.
 export default defineConfig({
   test: {
-    projects: ["shared/vitest.config.ts", "server/vitest.config.ts"],
+    projects: [
+      "shared/vitest.config.ts",
+      "server/vitest.config.ts",
+      "web/vitest.config.ts",
+      "scripts/vitest.config.ts",
+    ],
     passWithNoTests: true,
   },
 });

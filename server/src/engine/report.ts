@@ -90,9 +90,10 @@ function scenarioReport(bucket: RunBucket, recordingDir: string): ReportScenario
   const assertions = bucket.events.filter(
     (e): e is ScenarioAssertionEvent => e.type === "scenario.assertion",
   );
-  const diagnostics = assertions.flatMap((a) =>
-    a.diagnostic === undefined ? [] : [a.diagnostic],
-  );
+  const diagnostics = [
+    ...assertions.flatMap((a) => (a.diagnostic === undefined ? [] : [a.diagnostic])),
+    ...(bucket.completed?.diagnostics ?? []),
+  ];
   const refusal = deriveRefusal(bucket.events);
   const completed = bucket.completed;
   const terminal = transitions.at(-1);

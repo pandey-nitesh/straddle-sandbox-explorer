@@ -69,7 +69,14 @@ class FetchStraddleClient implements StraddleClient {
       return { ok: true, status: 200 };
     } catch (error) {
       if (error instanceof StraddleApiError) {
-        return { ok: false, status: error.status, message: error.message };
+        return {
+          ok: false,
+          status: error.status,
+          message: error.message,
+          // Verbatim (redacted) body when one exists; absent for the empty
+          // 401 (spec §18.5) so the UI shows its status line instead.
+          ...(error.errorBody !== undefined ? { error_body: error.errorBody } : {}),
+        };
       }
       return { ok: false, status: 0, message: String(error) };
     }
