@@ -1,0 +1,140 @@
+@import "tailwindcss";
+@import "./tokens.css";
+
+/*
+ * Tailwind v4 theme mapping (design.md §11): tokens.css is the single source;
+ * this @theme block is the v4 CSS-first equivalent of the tailwind.config
+ * `colors: { accent: 'var(--brand-accent)', … }` mapping. `inline` keeps the
+ * utilities pointing at the custom properties, so D0 calibration stays a
+ * one-file (tokens.css) change. Components never hard-code hexes.
+ */
+@theme inline {
+  --color-*: initial;
+  --color-accent: var(--brand-accent);
+  --color-accent-strong: var(--brand-accent-strong);
+  --color-ink: var(--brand-ink);
+  --color-surface-app: var(--surface-app);
+  --color-surface-card: var(--surface-card);
+  --color-surface-inset: var(--surface-inset);
+  --color-edge: var(--border);
+  --color-edge-strong: var(--border-strong);
+  --color-fg: var(--text-primary);
+  --color-fg-secondary: var(--text-secondary);
+  --color-fg-muted: var(--text-muted);
+  --color-status-inflight: var(--status-inflight);
+  --color-status-paid: var(--status-paid);
+  --color-status-provisional: var(--status-provisional);
+  --color-status-failed: var(--status-failed);
+  --color-status-cancelled: var(--status-cancelled);
+  --color-status-pass: var(--status-pass);
+  --color-status-fail: var(--status-fail);
+  --color-wire-client: var(--wire-client);
+  --color-wire-server: var(--wire-server);
+  --color-white: #ffffff; /* on-chip/on-button text (AA on its assigned fills) */
+
+  --font-sans: "Inter", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --radius-card: var(--radius-card);
+  --radius-chip: var(--radius-chip);
+  --radius-inset: var(--radius-inset);
+  --shadow-card: var(--shadow-card);
+}
+
+/* ---- Base (design §4: this is an instrument, not a landing page) ---- */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--surface-app);
+  color: var(--text-primary);
+  font-family: "Inter", system-ui, sans-serif;
+  font-size: 0.875rem; /* body 0.875/400 */
+  font-weight: 400;
+}
+
+/* Pane headers: 0.8125/600, uppercase, +0.06em tracking, muted (design §4).
+   Copy stays sentence case in markup; uppercase is presentation only. */
+.pane-header {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+/* Anything quoted from the wire is set in mono, verbatim (design §4). */
+.wire-quote {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.8125rem;
+}
+
+/* Visible 2px accent focus rings on all interactives (design §10). */
+:focus-visible {
+  outline: 2px solid var(--brand-accent);
+  outline-offset: 2px;
+}
+
+/* ---- Motion (design §7): three animations total, each carrying information ---- */
+
+/* 1. Timeline node entry — 200ms fade + 4px rise, the heartbeat of "live". */
+@keyframes node-entry {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-node-entry {
+  animation: node-entry 200ms ease-out both;
+}
+
+/* 2. Provisional-paid pulse — 2s ease opacity 1→0.55→1; stops at terminal. */
+@keyframes provisional-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+.animate-provisional-pulse {
+  animation: provisional-pulse 2s ease-in-out infinite;
+}
+
+/* 3. Chip color cross-fades at 150ms. Nothing else moves. */
+.chip-transition {
+  transition:
+    background-color 150ms ease,
+    border-color 150ms ease,
+    color 150ms ease;
+}
+
+/* Startup-state spinner (checking card, design §6.4). */
+@keyframes spinner-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.startup-spinner {
+  animation: spinner-rotate 0.9s linear infinite;
+}
+
+/* Reduced motion: entries appear instantly; the pulse becomes a static
+   half-filled dot — color+shape+label already carry the state (design §7). */
+@media (prefers-reduced-motion: reduce) {
+  .animate-node-entry,
+  .animate-provisional-pulse {
+    animation: none;
+  }
+  .chip-transition {
+    transition: none;
+  }
+}

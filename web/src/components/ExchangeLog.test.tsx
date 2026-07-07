@@ -1,0 +1,89 @@
+import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { ExchangeLog, type ExchangeEntry } from "./ExchangeLog";
+import { formatBackoff, truncateMiddle } from "./format";
+
+afterEach(cleanup);
+
+const ENTRIES: ExchangeEntry[] = [
+  {
+    id: "1",
+    method: "POST",
+    path: "/v1/charges",
+    status: 201,
+    latencyMs: 210,
+    requestBody: { amount: 1000, external_id: "run-x" },
+    responseBody: { id: "chg_1", status: "created" },
+  },
+  {
+    id: "2",
+    method: "GET",
+    path: "/v1/charges/chg_1",
+    status: 429,
+    latencyMs: 95,
+    responseBody: { error: { status: 429, title: "Too Many Requests" } },
+    retries: [{ attempt: 2, backoffMs: 1400 }],
+  },
+];
+
+describe("ExchangeLog", () => {
+  it("renders method, path, status chip, and latency per entry (§6.3)", () => {
+    render(<ExchangeLog entries={ENTRIES} />);
+    expect(screen.getByText("POST")).toBeTruthy();
+    expect(screen.getByText("/v1/charges")).toBeTruthy();
+    expect(screen.getByText("210ms")).toBeTruthy();
+    // 2xx pass tint, 4xx/5xx fail tint.
+    const ok = screen.getByText("201");
+    expect(ok.getAttribute("data-tone")).toBe("pass");
+    expect(ok.className).toContain("text-status-pass");
+    const limited = screen.getByText("429");
+    expect(limited.getAttribute("data-tone")).toBe("fail");
+    expect(limited.className).toContain("text-status-fail");
+  });
+
+  it("renders retries as indented sub-entries labeled attempt · backoff", () => {
+    render(<ExchangeLog entries={ENTRIES} />);
+    const retry = screen.getByText("attempt 2 · backoff 1.4s");
+    expect(retry.className).toContain("pl-6");
+    expect(retry.className).toContain("wire-quote");
+  });
+
+  it("expands bodies to inset JSON blocks with muted line numbers and provenance edges", () => {
+    const { container } = render(<ExchangeLog entries={[ENTRIES[0]!]} />);
+    const header = screen.getByRole("button", { expanded: false });
+    fireEvent.click(header);
+    expect(header.getAttribute("aria-expanded")).toBe("true");
+    // Verbatim bodies.
+    expect(screen.getByText(/"external_id": "run-x"/)).toBeTruthy();
+    expect(screen.getByText(/"chg_1"/)).toBeTruthy();
+    // Teal client edge on the request, purple server edge on the response.
+    expect(container.querySelector(".border-l-wire-client")).toBeTruthy();
+    expect(container.querySelector(".border-l-wire-server")).toBeTruthy();
+    // Numbered-snippet motif: muted line numbers inside the inset block.
+    const pre = container.querySelector("pre");
+    expect(pre?.className).toContain("bg-surface-inset");
+    expect(pre?.textContent).toContain("1");
+    expect(pre?.querySelector(".text-fg-muted")).toBeTruthy();
+  });
+
+  it("shows the empty state when no exchanges exist", () => {
+    render(<ExchangeLog entries={[]} />);
+    expect(screen.getByText("No exchanges yet.")).toBeTruthy();
+  });
+});
+
+describe("format helpers", () => {
+  it("formats backoff seconds (1400 → 1.4s, 2000 → 2s)", () => {
+    expect(formatBackoff(1400)).toBe("1.4s");
+    expect(formatBackoff(2000)).toBe("2s");
+  });
+
+  it("middle-truncates long paths", () => {
+    const long = "/v1/charges/chg_0123456789abcdef0123456789abcdef";
+    const short = truncateMiddle(long, 24);
+    expect(short.length).toBe(24);
+    expect(short).toContain("…");
+    expect(short.startsWith("/v1/charges/")).toBe(true);
+    expect(truncateMiddle("/v1/charges", 24)).toBe("/v1/charges");
+  });
+});
