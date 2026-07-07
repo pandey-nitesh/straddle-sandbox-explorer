@@ -128,7 +128,7 @@ Node anatomy: 12px dot on the rail · status name in mono 600 colored by the sem
 
 Terminal treatments: `paid` (non-reversal) filled green + ✓ · `failed`/`reversed` filled red + code chip · `cancelled` hollow slate ring (gray-and-empty reads "deliberately stopped" vs. red's "went wrong") with the captured reason underneath in `--text-secondary`.
 
-For Scenario E the pane renders the **evidence-row card** instead of a rail — a direct quote of Straddle's own verification-results pattern: labeled fact rows with category tags and pass indicators (`customer status: rejected · Identity ✓` / `charge refused: 4xx · API ✓`), each row being one satisfied RequiredObservation, followed by the verbatim refusal body as a JSON block. Assertion results for all scenarios reuse this row pattern in the summary strip drill-down.
+For Scenario E the pane renders the **evidence-row card** instead of a rail — a direct quote of Straddle's own verification-results pattern: labeled fact rows with category tags and pass indicators (`customer status: rejected · Identity ✓` / `paykey refused: 422 · API ✓` — M0 resolved the refusal point to `create_paykey`, spec §18.4), each row being one satisfied RequiredObservation, followed by the verbatim refusal body as a JSON block. Assertion results for all scenarios reuse this row pattern in the summary strip drill-down.
 
 ### 6.3 Wire log (right pane)
 
@@ -136,7 +136,7 @@ Chronological exchanges for the selected scenario. Entry header: method (mono 60
 
 ### 6.4 Startup states (full-screen, replacing the app per FR-8)
 
-Centered single card, max-width 420px. *Missing key:* title "Add your sandbox API key"; body walks `dashboard.straddle.com → API keys` and `cp .env.example .env`; the shell command in an inset mono block with a copy button. *Invalid key:* title "Straddle rejected this key"; the auth error body verbatim in a JSON block; hint text to regenerate. *Checking:* wordmark + small spinner. Errors explain and instruct; they never apologize and never stack-trace.
+Centered single card, max-width 420px. *Missing key:* title "Add your sandbox API key"; body walks `dashboard.straddle.com → API keys` and `cp .env.example .env`; the shell command in an inset mono block with a copy button. *Invalid key:* title "Straddle rejected this key"; the auth failure shown as its status line (`401 · no response body` — M0: the sandbox 401 body is empty, spec §18.5; if a body is ever present, render it verbatim in a JSON block); hint text to regenerate. *Checking:* wordmark + small spinner. Errors explain and instruct; they never apologize and never stack-trace.
 
 ### 6.5 Buttons, summary strip, toasts
 
