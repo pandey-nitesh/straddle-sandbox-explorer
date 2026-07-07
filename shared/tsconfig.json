@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    // Platform-neutral: consumed by the browser bundle too.
+    // No DOM lib, no Node ambient types — Node globals must fail to typecheck here.
+    "lib": ["ES2022"],
+    "types": []
+  },
+  "include": ["src"],
+  // Test files are typechecked by tsconfig.test.json instead: importing vitest
+  // transitively registers @types/node globals, which would silently defeat
+  // the platform-neutrality guard above for the whole program.
+  "exclude": ["src/**/*.test.ts", "src/**/__tests__/**"]
+}

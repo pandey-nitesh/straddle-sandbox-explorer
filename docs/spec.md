@@ -20,7 +20,7 @@ The product is deliberately local-only: no database, no auth, no production Stra
 - **Shared schemas are contracts.** Server, CLI, scripts, and web import the same Zod-backed types from `shared/`. Facts derivable from a contract (e.g. "this scenario expects a reversal") are derived, never stored alongside it.
 - **Interface-first, mock-second, sandbox-last.** Every consumer of the Straddle client is built against the `StraddleClient` interface and a scripted mock before the real adapter exists.
 - Scenario execution is concurrent in web mode. Serial execution is CLI-only and P1.
-- Scenario C must observe `paid` and later `reversed`; terminal `reversed` without prior observed `paid` is a failure.
+- Scenario C must observe `paid` and later `reversed`; terminal `reversed` without prior observed `paid` is a failure. **M0 resolution (§18.1): the live sandbox never surfaces `paid`/`reversed` on `reversed_*` outcomes — this contract is retained for the mock client and replay; live Scenario C asserts the documented deviation evidence instead.**
 
 ## 3. Architecture Overview
 
@@ -124,7 +124,7 @@ export const RequiredObservationSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("customer_review"),
              status: z.string() }),                   // E: "rejected"
   z.object({ kind: z.literal("api_refusal"),
-             afterAction: z.enum(["create_paykey","create_charge"]) }), // E; M0 picks
+             afterAction: z.enum(["create_paykey","create_charge"]) }), // E; M0 picked create_paykey (422) — create_charge kept for enum stability, unreachable (§18.4)
 ]);
 
 export const ScenarioDefSchema = z.object({
@@ -276,7 +276,7 @@ class StraddleApiError extends Error {
 }
 ```
 
-The client retries retryable errors internally (exponential backoff + jitter, `Retry-After` honored, each retry emitting `retry.scheduled`) and throws `StraddleApiError` when exhausted, or immediately for non-retryable 4xx. Scenario E's runner step **catches** `StraddleApiError` from the deliberate post-rejection action and records it as `ApiRefusal` evidence — the one place a 4xx is success. Everywhere else, a thrown `StraddleApiError` fails the run with a diagnostic and a `run.completed` of status `failed`. Hard-timeout expiry (poller, below) does the same: diagnostic `"hard timeout after Nms in status <s>"`, status `failed`, clean `run.completed` — a timeout is a result, not a crash.
+The client retries retryable errors internally (exponential backoff + jitter, `Retry-After` honored when present — M0 never observed one, so the policy must not depend on it — each retry emitting `retry.scheduled`) and throws `StraddleApiError` when exhausted, or immediately for non-retryable 4xx. Scenario E's runner step **catches** `StraddleApiError` from the deliberate post-rejection action and records it as `ApiRefusal` evidence — the one place a 4xx is success. Everywhere else, a thrown `StraddleApiError` fails the run with a diagnostic and a `run.completed` of status `failed`. Hard-timeout expiry (poller, below) does the same: diagnostic `"hard timeout after Nms in status <s>"`, status `failed`, clean `run.completed` — a timeout is a result, not a crash.
 
 ### Scenario flow
 
@@ -284,7 +284,7 @@ Scenarios A–D:
 
 1. Emit `run.started`.
 2. Create customer with scenario customer outcome.
-3. Settle customer review — synchronously or via the generic poller, per M0 — and emit `customer.review_changed` with the `IdentityReviewSummary`.
+3. Settle customer review — **synchronous per M0** (the forced status is already terminal in the 201 create response; the generic poller is not needed for customers) — and emit `customer.review_changed` with the `IdentityReviewSummary` (mapping per api-notes.md §6: `verification_status` ← customer `status`, scores ← `identity_details.breakdown`; never key on `identity_details.decision`, which reads `accept` even for rejected customers).
 4. Create paykey via the M0-confirmed endpoint (+ any required headers).
 5. Create charge with scenario charge outcome, consent metadata, `payment_date`, `external_id = run_id`.
 6. Poll the charge until the scenario's settled-predicate (derived from `requiredObservations`) returns true or the hard timeout fires.
@@ -301,7 +301,8 @@ Generic over resource type; policy is data, predicates are typed:
 type PollPolicy = {
   baseMinMs: number;    // 15_000 default
   baseMaxMs: number;    // 30_000 default (uniform jitter)
-  fastMs: number;       // ~5_000; finalized from M0's paid→reversed window
+  fastMs: number;       // 5_000; M0: the paid→reversed window is unobservable live —
+                        // justified instead by the measured ~241s reversal-window analog (§18.1)
   hardTimeoutMs: number; // ~600_000
 };
 
@@ -317,7 +318,7 @@ async function poll<T>(args: {
 
 Rules:
 
-- `switchToFast` is a **latch**: once any observation matches, the interval stays at `fastMs` until settled. For reversal scenarios it matches the first pre-terminal status M0 identifies as preceding `paid`.
+- `switchToFast` is a **latch**: once any observation matches, the interval stays at `fastMs` until settled. For reversal scenarios it matches the first `pending` observation (M0: `pending` is the status preceding any terminal, and the reversal-style terminal lands a deterministic ~241 s after the last `pending` history event).
 - If Scenario C's settled-predicate fires on `reversed` without `paid` in `observations`, the evaluator fails the run with the loud diagnostic required by the PRD.
 - **Process-wide rate floor:** all pollers share a scheduler enforcing a minimum gap (~250 ms) between any two Straddle requests, and every poller yields to `Retry-After`. Fast mode across five concurrent scenarios must not become a self-inflicted 429 storm; the floor bounds worst-case request rate regardless of policy values.
 
@@ -345,7 +346,7 @@ Fastify serves the JSON API and static `web/dist` in `npm start` mode.
 
 | Endpoint | Method | Body / Query | Response |
 | --- | --- | --- | --- |
-| `/api/health` | GET | none | `{ epoch, key: "ok"\|"missing"\|"invalid", error_body? }` |
+| `/api/health` | GET | none | `{ epoch, key: "ok"\|"missing"\|"invalid", error_body? }` — M0: the sandbox 401 has an empty body, so `error_body` is normally absent for invalid keys (§18.5) |
 | `/api/runs` | POST | `{ scenarios: ["a","b"] }` | created run IDs |
 | `/api/runs` | GET | none | registry snapshot (all runs, latest-per-scenario marked) |
 | `/api/events` | GET | `?since=<seq>` | `{ epoch, events: RunEvent[] }` with `seq > since` |
@@ -392,7 +393,7 @@ P1 replay: the browser fetches recordings via the §9 endpoints (no file-picker 
 
 ### Live sandbox (after M0, before demos)
 
-`npm run scenarios -- --all`; `npm run check:secrets`; the canary run (dummy key, most verbose logging, zero survivals); Scenario C observes `paid` then `reversed` live; Scenario E captures rejection + structured refusal; clean-clone smoke `npm install && npm start`.
+`npm run scenarios -- --all`; `npm run check:secrets`; the canary run (dummy key, most verbose logging, zero survivals); Scenario C live captures the documented deviation evidence (`failed` + reversal R-code + ~241 s reversal-window delay per §18.1) while the `paid`→`reversed` ordered observation is exercised via mock and replay; Scenario E captures rejection + structured refusal; clean-clone smoke `npm install && npm start`.
 
 ## 13. Wave Plan and Parallel Subtasks
 
@@ -482,7 +483,7 @@ Required: live dry-run with timing notes; replay-only dry-run; README (setup, co
 - `api-notes.md` exists with sanitized M0 evidence and deviations; README carries "Deviations from spec."
 - Clean clone: `npm install && npm start` serves the browser app locally.
 - `npm run scenarios -- --all` writes `ReportSchema`-valid `./report.json` and JSONL recordings.
-- Scenario A: terminal `paid`. B: terminal `failed` + expected return code. C: observed `paid`, then `reversed`, timestamps + code — and the diagnostic fires if `paid` was never observed. D: `cancelled` + reason detail. E: rejected review **and** structured refusal captured.
+- Scenario A: terminal `paid`. B: terminal `failed` + expected return code. C: **mock/replay** demonstrates observed `paid`, then `reversed`, timestamps + code — and the diagnostic fires if `paid` was never observed; **live** C captures the §18.1 deviation evidence (`failed` + reversal R-code + ~241 s delay). D: `cancelled` + reason detail. E: rejected review **and** structured refusal captured.
 - Browser Run All completes A–E concurrently, live, within the ~15-minute budget.
 - Missing-key and invalid-key states are clean and stack-trace-free in both entry points.
 - **Round-trip equality test green:** CLI-path and HTTP-path serializations of the same run parse and deep-equal.
@@ -494,3 +495,16 @@ Required: live dry-run with timing notes; replay-only dry-run; README (setup, co
 ## 17. Change Log (v1 → v2)
 
 Contracts: `RequiredObservation` discriminated union replaces stringly observations; `expectsReversal` derived, not stored; `ScenarioId` covers a–i with a runtime registry gating runnable scenarios; `StatusTransition`/`IdentityReviewSummary`/`ApiRefusal` defined; report `running` status removed and suite semantics defined as latest-run-per-scenario with `partial` meaning incomplete coverage (suite) or interrupted run (scenario). Event model: single event bus assigns globally monotonic per-process `seq`; recorder/registry/logger are subscribers; per-run JSONL has seq gaps by design; `epoch` added to survive server restarts. Engine: `StraddleApiError` error model with Scenario E's refusal-as-evidence carved out; hard timeout defined as a failed result, not a crash; poller `switchToFast` typed against `T` and specified as a latch; process-wide rate floor added. Security: redactor moved from `shared/` to `server/` with a bundle-unreachability guard; canary mechanism made concrete (env key + static seeded constants; nothing sensitive persisted); `runs/` gitignore decided. HTTP: suite ID removed; recordings endpoints added for replay; re-run-while-live semantics defined. Layout/toolchain: `scripts/` added; `report.json` path pinned; dev/start orchestration and ports specified; Node/vitest/tsx/Playwright pinned. Waves: Wave 0 restructured into a dependency-honest phase graph with single-writer consolidation; mock Straddle client promoted to a named Wave 1 deliverable enabling genuine Wave 2 parallelism; sandbox access serialized during Wave 2; Wave 4 exit restored to the PRD's hard 15-minute target; identity panel reunited with the paykey summary. Checklist: canary run, round-trip equality, and retries-in-logs restored from the PRD.
+
+## 18. M0 Resolutions (v2.1, Wave 0 gate — evidence in api-notes.md)
+
+Live-sandbox facts recorded at the Wave 0 gate on 2026-07-07. Where they contradict earlier sections, this section and `api-notes.md` win. Full deviation list: api-notes.md §12.
+
+1. **Scenario C.** The sandbox never surfaces `paid` or `reversed` on `reversed_*` charge outcomes (observed 3×, both seeded accounts, both `balance_check` settings — contradicting Straddle's own sandbox guide): the lifecycle is `created → scheduled → pending → failed`, with the reversal's R-code landing a **deterministic ~241 s after the last `pending` history event** (~5 m 50 s total; plain `failed_*`/`paid` outcomes take ~117 s). Resolution: the `ordered_statuses ["paid","reversed"]` contract, evaluator rule, and provisional-paid UI are **unchanged** and exercised via the mock client and replay; the **live** Scenario C run instead asserts `failed` + expected reversal R-code + the ≥~4-minute reversal-window delay as its documented deviation evidence. Re-check the live behavior with one charge before Wave 2 exit (webhook-only reversal signaling is not ruled out).
+2. **Sandbox state is mutable and can be poisoned.** An R05 dispute return permanently blocks both the paykey and the underlying seeded bank account for new paykey creation. Engine rules: fresh customer+paykey per run (mandatory, not stylistic); never use `*_customer_dispute` outcomes in repeatable scenarios; `SEEDED_BANK` carries both documented account numbers with `987654321` preferred (`123456789` is R05-blocked on this key). R01 returns do not poison.
+3. **Customer review is synchronous** (`config.sandbox_outcome`, inline processing): the forced status is terminal in the 201 create response; the generic poller applies to charges only. `IdentityReviewSummary` maps from the review payload per api-notes.md §6; the rejected gate keys on customer `status`, never `identity_details.decision` (which reads `accept` even when rejected).
+4. **Scenario E refusal = `create_paykey`**: POST `/v1/bridge/bank_account` for a rejected customer returns a deterministic 422 whose body is not self-describing — the evaluator asserts `status === 422` ∧ `error.items` absent ∧ `error.detail` matches `/customer is rejected/i`. `create_charge` is structurally unreachable as a refusal point and stays in the enum for stability only.
+5. **Auth/errors.** The invalid-key 401 has an **empty body** (nothing to render verbatim; UI shows the status line instead). Error envelopes live under a top-level `error` key (`{status, type, title, detail?, items?}`), not `data`. Validation failures arrive in two shapes (400 `/bad_request` PascalCase refs; 422 `/validation_error` lowercase refs). No `Retry-After`/`X-RateLimit-*` headers were observed.
+6. **Charge creation requires `config.balance_check`**; scenario definitions pin `"disabled"` (`"required"` watchtower-fails every charge on balance-less bank_account paykeys). Return codes live at `status_details.code` (absent when inapplicable); bank-decline evidence keys on `status_details.source === "bank_decline"`.
+7. **Transport.** SDK `@straddlecom/straddle@0.3.0` pinned exact. Wave 2's runtime adapter currently uses direct `fetch` behind `server/src/straddle/client.ts` rather than invoking SDK resource methods, while preserving the same boundary, explicit `baseURL https://sandbox.straddle.io`, local retry/backoff ownership, `api.exchange` per HTTP attempt, `retry.scheduled` per backoff, and explicit `Idempotency-Key` header. The SDK remains isolated as a future swap target; no consumer imports SDK types. Timestamps vary in precision across endpoints — shared schemas use lenient datetime validation, not bare `z.string().datetime()`.
+8. **Budget.** Concurrent Run All worst case ≈ 6 min (C dominates at ~5 m 50 s; ~130 requests total) — inside the ~15-minute budget with >2× headroom. Serial execution would sum to ~16 min: concurrency is load-bearing.
