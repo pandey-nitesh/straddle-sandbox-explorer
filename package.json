@@ -13,6 +13,8 @@
   "scripts": {
     "typecheck": "tsc -p shared && tsc -p shared/tsconfig.test.json && tsc -p server",
     "test": "vitest run",
+    "dev": "tsx watch server/src/index.ts",
+    "start": "tsx server/src/index.ts",
     "scenarios": "tsx server/src/cli.ts",
     "check:secrets": "tsx scripts/check-secrets.ts"
   },

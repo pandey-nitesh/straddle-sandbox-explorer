@@ -38,6 +38,8 @@ export interface RunOptions {
   reportPath?: string;
   pollPolicy?: Partial<PollPolicy>;
   clientFactory?: (context: RunContext) => StraddleClient;
+  /** Called synchronously after run IDs are allocated, before work awaits. */
+  onRunIds?: (runIds: string[]) => void;
 }
 
 export interface RunContext {
@@ -94,6 +96,7 @@ export async function runScenarios(options: RunOptions): Promise<RunSuiteResult>
         clientFactory: options.clientFactory,
       });
   });
+  options.onRunIds?.([...runIds]);
 
   try {
     if (options.concurrency === "serial") {

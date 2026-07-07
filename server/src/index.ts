@@ -1,6 +1,15 @@
-// Placeholder entry so the empty workspace typechecks, and a standing proof
-// that cross-workspace resolution of @sse/shared works under NodeNext.
-// Wave 1/2 agents add the real modules (spec §4); nothing imports this file.
-import "@sse/shared";
+import { loadConfig } from "./config.js";
+import { createHttpServer } from "./http/server.js";
 
-export {};
+export async function main(): Promise<void> {
+  const config = loadConfig();
+  const app = await createHttpServer({ config });
+  await app.listen({ port: config.port, host: "127.0.0.1" });
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}

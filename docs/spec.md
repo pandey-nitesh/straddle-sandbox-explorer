@@ -81,6 +81,7 @@ straddle-sandbox-explorer/
     src/engine/bus.ts       # event bus: seq assignment, fan-out
     src/engine/scenarios.ts # declarative defs + registry of runnable IDs
     src/engine/poller.ts
+    src/engine/registry.ts # in-memory run/event projection; bus subscriber
     src/engine/runner.ts
     src/engine/evaluator.ts
     src/engine/report.ts
