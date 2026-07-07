@@ -81,7 +81,7 @@ export function AppShell(props: AppShellProps) {
         <PrimaryButton onClick={props.onRunAll}>Run all</PrimaryButton>
       </header>
 
-      <main className="grid min-h-0 flex-1 grid-cols-1 gap-4 p-4 lg:grid-cols-[280px_minmax(340px,0.85fr)_minmax(520px,1.15fr)] xl:p-6">
+      <main className="grid min-h-0 flex-1 grid-cols-1 gap-4 p-4 xl:grid-cols-[280px_minmax(280px,0.6fr)_minmax(620px,1.4fr)] xl:p-6">
         <Pane title="Scenarios">
           {props.scenarios ?? <Placeholder>Scenarios A–E load here.</Placeholder>}
         </Pane>

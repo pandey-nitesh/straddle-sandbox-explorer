@@ -216,9 +216,10 @@ describe("Dashboard wiring", () => {
       },
     );
     // The poller's next 2s cycle delivers the batch.
-    await waitFor(() => expect(screen.getByText("reversed")).toBeTruthy(), {
-      timeout: 5_000,
-    });
+    await waitFor(
+      () => expect(screen.getAllByText("reversed").length).toBeGreaterThan(0),
+      { timeout: 5_000 },
+    );
 
     // Both nodes permanently visible: amber provisional AND red reversed.
     expect(screen.getByText("paid — provisional")).toBeTruthy();
@@ -287,6 +288,14 @@ describe("Dashboard wiring", () => {
     const wire = screen.getByRole("region", { name: "Wire" });
     expect(within(wire).getByText("POST")).toBeTruthy();
     expect(within(wire).getByText("422")).toBeTruthy();
+
+    const lifecycle = screen.getByRole("region", { name: "Lifecycle" });
+    expect(lifecycle.textContent).toContain(run);
+    expect(lifecycle.textContent).toContain(SCENARIO_E.purpose);
+    expect(lifecycle.textContent).toContain(
+      "customer rejected; refusal after create_paykey",
+    );
+    expect(lifecycle.textContent).toContain(`runs/${run}.jsonl`);
   });
 
   it("keeps the lifecycle pane a polite live region and Run all focusable (design §10)", async () => {

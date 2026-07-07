@@ -8,6 +8,10 @@ import type { ExchangeEntry as ExchangeLogEntry } from "../components/ExchangeLo
 import type { ScenarioListItem } from "../components/ScenarioList";
 import type { ScenarioAssertions } from "../components/RunSummary";
 import type {
+  RunOverviewProps,
+  RunOverviewRow,
+} from "../components/RunOverview";
+import type {
   DetailPanelProps,
   DetailRow,
 } from "../components/DetailPanel";
@@ -186,6 +190,65 @@ export function projectTimelineNodes(run: RunState): TimelineViewNode[] {
       ...(node.reason !== undefined ? { reason: node.reason } : {}),
     };
   });
+}
+
+export function projectRunOverview(run: RunState): RunOverviewProps {
+  const rows: RunOverviewRow[] = [
+    { label: "Run", value: run.runId, mono: true },
+    {
+      label: "Outcome",
+      value: outcomeOf(run) ?? "n/a",
+      mono: true,
+    },
+    {
+      label: "Started",
+      value: run.startedAt,
+      mono: true,
+    },
+    {
+      label: "Duration",
+      value:
+        run.completed === undefined
+          ? "running"
+          : `${Math.round(run.completed.durationMs / 1000)}s`,
+      mono: true,
+    },
+  ];
+
+  if (run.latestPaymentStatus !== null) {
+    rows.push({ label: "Latest", value: run.latestPaymentStatus, mono: true });
+  }
+  if (run.completed !== undefined) {
+    rows.push(
+      { label: "Result", value: run.completed.result, mono: true },
+      { label: "Ended", value: run.completed.at, mono: true },
+      { label: "Recording", value: run.completed.recordingPath, mono: true },
+    );
+  }
+  rows.push({
+    label: "Expects",
+    value: run.scenario.requiredObservations.map(describeObservation).join("; "),
+  });
+
+  return {
+    label: run.scenario.label,
+    purpose: run.scenario.purpose,
+    chip: run.chip,
+    rows,
+  };
+}
+
+function describeObservation(obs: RequiredObservation): string {
+  switch (obs.kind) {
+    case "terminal_status":
+      return `terminal ${obs.status}${obs.returnCode !== undefined ? ` ${obs.returnCode}` : ""}`;
+    case "ordered_statuses":
+      return obs.statuses.join(" -> ");
+    case "customer_review":
+      return `customer ${obs.status}`;
+    case "api_refusal":
+      return `refusal after ${obs.afterAction}`;
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -8,6 +8,7 @@ import {
 } from "./api";
 import { AppShell } from "./components/AppShell";
 import { ReplayPanel } from "./components/ReplayPanel";
+import { RunOverview } from "./components/RunOverview";
 import { RunSummary } from "./components/RunSummary";
 import { ScenarioList } from "./components/ScenarioList";
 import { Timeline } from "./components/Timeline";
@@ -25,6 +26,7 @@ import {
   projectEventConsoleEntries,
   projectExchanges,
   projectInspectorEntries,
+  projectRunOverview,
   projectScenarioItems,
   projectTimelineNodes,
 } from "./state/projections";
@@ -116,6 +118,10 @@ export function Dashboard({ fetchFn }: DashboardProps) {
     () => (run === null ? [] : projectTimelineNodes(run)),
     [run],
   );
+  const runOverview = useMemo(
+    () => (run === null ? undefined : projectRunOverview(run)),
+    [run],
+  );
   const evidence = useMemo(
     () => (run === null ? undefined : projectEvidence(run)),
     [run],
@@ -165,8 +171,9 @@ export function Dashboard({ fetchFn }: DashboardProps) {
         </div>
       }
       lifecycle={
-        run === null ? undefined : (
-          <div className="mx-auto w-full max-w-[560px]">
+        run === null || runOverview === undefined ? undefined : (
+          <div className="mx-auto w-full max-w-[460px]">
+            <RunOverview {...runOverview} />
             <Timeline
               nodes={timelineNodes}
               live={run.completed === undefined}
