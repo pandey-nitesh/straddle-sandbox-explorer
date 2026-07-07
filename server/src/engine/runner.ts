@@ -4,6 +4,7 @@ import {
   SEEDED_BANK,
   type ApiRefusal,
   type IdentityReviewSummary,
+  type Report,
   type RunEvent,
   type ScenarioId,
   type StatusTransition,
@@ -16,6 +17,7 @@ import {
   requireScenario,
   type RunnableScenarioDef,
   type RunnableScenarioId,
+  type ScenarioMode,
 } from "./scenarios.js";
 import { DEFAULT_POLL_POLICY, poll, RateFloorScheduler } from "./poller.js";
 import type { PollPolicy } from "./poller.js";
@@ -37,6 +39,8 @@ export interface RunOptions {
   recordingDir?: string;
   reportPath?: string;
   pollPolicy?: Partial<PollPolicy>;
+  /** Scenario C variant per spec §18.1: "contract" (mock/replay) or "live". */
+  mode?: ScenarioMode;
   clientFactory?: (context: RunContext) => StraddleClient;
   /** Called synchronously after run IDs are allocated, before work awaits. */
   onRunIds?: (runIds: string[]) => void;
@@ -52,6 +56,7 @@ export interface RunContext {
 export interface RunSuiteResult {
   runIds: string[];
   reportPath?: string;
+  report?: Report;
 }
 
 interface ScenarioEvidence {
@@ -81,7 +86,7 @@ export async function runScenarios(options: RunOptions): Promise<RunSuiteResult>
     collectedEvents.push(event);
   });
   const tasks = options.scenarios.map((id) => {
-    const scenario = requireScenario(id);
+    const scenario = requireScenario(id, options.mode);
     const runId = makeRunId(scenario.id, clock);
     runIds.push(runId);
     return () =>
@@ -98,6 +103,7 @@ export async function runScenarios(options: RunOptions): Promise<RunSuiteResult>
   });
   options.onRunIds?.([...runIds]);
 
+  let report: Report | undefined;
   try {
     if (options.concurrency === "serial") {
       for (const task of tasks) await task();
@@ -106,7 +112,7 @@ export async function runScenarios(options: RunOptions): Promise<RunSuiteResult>
     }
 
     if (options.reportPath !== undefined) {
-      const report = buildReport(collectedEvents, {
+      report = buildReport(collectedEvents, {
         recordingDir,
         generatedAt: new Date(clock.now()).toISOString(),
       });
@@ -120,7 +126,11 @@ export async function runScenarios(options: RunOptions): Promise<RunSuiteResult>
     unsubscribe();
   }
 
-  return { runIds, reportPath: options.reportPath };
+  return {
+    runIds,
+    reportPath: options.reportPath,
+    ...(report !== undefined ? { report } : {}),
+  };
 }
 
 async function runOneScenario(args: {

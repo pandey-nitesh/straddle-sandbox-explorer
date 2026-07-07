@@ -79,6 +79,7 @@ export async function registerRoutes(
       clock: options.clock,
       recordingDir: options.recordingDir,
       pollPolicy: options.config.pollPolicyOverrides,
+      mode: options.mockMode === true ? "contract" : "live",
       onRunIds: (runIds) => {
         createdRunIds = runIds;
       },

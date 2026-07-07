@@ -26,18 +26,37 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   });
 
   if (!args.mock && !config.keyPresent) {
-    throw new Error(
+    throw new CliError(
+      2,
       "STRADDLE_API_KEY is missing. Set it in the environment/.env or pass --mock.",
     );
   }
+  if (!args.mock) {
+    // Preflight on a detached bus so the probe never reaches the recorder.
+    const probe = createStraddleClient({
+      apiKey: config.straddleApiKey ?? "",
+      bus: createBus(),
+      context: { run_id: "preflight", scenario_id: "a" },
+    });
+    const health = await probe.health();
+    if (!health.ok) {
+      throw new CliError(
+        2,
+        health.status === 401
+          ? "Straddle rejected this key (401 · no response body). Regenerate it at dashboard.straddle.com → API keys."
+          : `Straddle sandbox unreachable (${health.message ?? health.status}).`,
+      );
+    }
+  }
 
-  await runScenarios({
+  const result = await runScenarios({
     scenarios: scenarioIds,
     concurrency: args.serial ? "serial" : "concurrent",
     bus,
     recordingDir: args.recordingDir,
     reportPath: args.reportPath,
     pollPolicy: config.pollPolicyOverrides,
+    mode: args.mock ? "contract" : "live",
     clientFactory: (context) =>
       args.mock
         ? createMockStraddleClient({
@@ -60,7 +79,28 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   });
 
   // Keep stdout human-safe and terse; detailed evidence lives in report/runs.
-  console.log(`wrote ${args.reportPath}`);
+  const report = result.report;
+  if (report !== undefined) {
+    const passed = report.scenarios.filter((s) => s.status === "passed").length;
+    console.log(
+      `suite: ${report.suite.status} · ${passed}/${report.scenarios.length} passed · wrote ${args.reportPath}`,
+    );
+    if (report.scenarios.some((s) => s.status !== "passed")) {
+      process.exitCode = 1;
+    }
+  } else {
+    console.log(`wrote ${args.reportPath}`);
+  }
+}
+
+class CliError extends Error {
+  constructor(
+    readonly exitCode: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "CliError";
+  }
 }
 
 function parseArgs(argv: readonly string[]): CliArgs {
@@ -128,6 +168,6 @@ Options:
 if (import.meta.url === `file://${process.argv[1]}`) {
   main().catch((error: unknown) => {
     console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
+    process.exitCode = error instanceof CliError ? error.exitCode : 1;
   });
 }
