@@ -166,11 +166,13 @@ export function Dashboard({ fetchFn }: DashboardProps) {
       }
       lifecycle={
         run === null ? undefined : (
-          <Timeline
-            nodes={timelineNodes}
-            live={run.completed === undefined}
-            {...(evidence !== undefined ? { evidence } : {})}
-          />
+          <div className="mx-auto w-full max-w-[560px]">
+            <Timeline
+              nodes={timelineNodes}
+              live={run.completed === undefined}
+              {...(evidence !== undefined ? { evidence } : {})}
+            />
+          </div>
         )
       }
       wire={

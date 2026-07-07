@@ -2,8 +2,8 @@ import type { ButtonHTMLAttributes, ReactNode } from "react";
 import { Wordmark } from "./Wordmark";
 
 /**
- * Single-screen shell (design §5): 56px header, three-column grid
- * 280px / flex / 380px, summary strip, unaffiliation footer line.
+ * Single-screen shell (design §5): 56px header, scenario nav + lifecycle +
+ * wide wire inspector, summary strip, unaffiliation footer line.
  * Panes are placeholder slots — Stage 2 fills them with the live components.
  */
 export interface AppShellProps {
@@ -81,7 +81,7 @@ export function AppShell(props: AppShellProps) {
         <PrimaryButton onClick={props.onRunAll}>Run all</PrimaryButton>
       </header>
 
-      <main className="grid min-h-0 flex-1 grid-cols-[280px_1fr_380px] gap-4 p-6">
+      <main className="grid min-h-0 flex-1 grid-cols-1 gap-4 p-4 lg:grid-cols-[280px_minmax(340px,0.85fr)_minmax(520px,1.15fr)] xl:p-6">
         <Pane title="Scenarios">
           {props.scenarios ?? <Placeholder>Scenarios A–E load here.</Placeholder>}
         </Pane>
