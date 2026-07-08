@@ -16,6 +16,7 @@ describe("HTTP server", () => {
       config: loadConfig({ env: {}, envFilePath: false }),
       epoch: "test-epoch",
       attachRecorder: false,
+      rehydrate: false,
       serveStatic: false,
       logger: false,
     });
@@ -251,6 +252,105 @@ describe("HTTP server", () => {
     });
     expect(item.statusCode).toBe(200);
     expect(item.body).toContain('"type":"run.completed"');
+
+    await app.close();
+  });
+
+  it("rehydrates the registry from recordings and continues seq above history", async () => {
+    const recordingDir = mkdtempSync(path.join(tmpdir(), "straddle-http-rehydrate-"));
+    const completeRunId = "run-20260707T120000Z-c-0001";
+    const partialRunId = "run-20260707T120100Z-c-0002";
+    // A completed run recorded with a high original seq (11) — the sort of
+    // stale, per-session value that must NOT leak into the live seq space.
+    writeFileSync(
+      path.join(recordingDir, `${completeRunId}.jsonl`),
+      [
+        JSON.stringify({
+          seq: 10,
+          timestamp: "2026-07-07T12:00:00.000Z",
+          type: "run.started",
+          run_id: completeRunId,
+          scenario_id: "c",
+          scenario: {
+            id: "c",
+            label: "C. Reversal",
+            purpose: "Mock/replay reversal evidence.",
+            outcomes: { customer: "verified", paykey: "active", charge: "reversed_insufficient_funds" },
+            requiredObservations: [{ kind: "ordered_statuses", statuses: ["paid", "reversed"] }],
+          },
+        }),
+        JSON.stringify({
+          seq: 11,
+          timestamp: "2026-07-07T12:00:05.000Z",
+          type: "run.completed",
+          run_id: completeRunId,
+          scenario_id: "c",
+          result: "passed",
+          duration_ms: 5_000,
+          recording_path: path.join(recordingDir, `${completeRunId}.jsonl`),
+        }),
+        "",
+      ].join("\n"),
+    );
+    // A run whose recording stops before run.completed → partial on reload.
+    writeFileSync(
+      path.join(recordingDir, `${partialRunId}.jsonl`),
+      JSON.stringify({
+        seq: 4,
+        timestamp: "2026-07-07T12:01:00.000Z",
+        type: "run.started",
+        run_id: partialRunId,
+        scenario_id: "c",
+        scenario: {
+          id: "c",
+          label: "C. Reversal",
+          purpose: "Mock/replay reversal evidence.",
+          outcomes: { customer: "verified", paykey: "active", charge: "reversed_insufficient_funds" },
+          requiredObservations: [{ kind: "ordered_statuses", statuses: ["paid", "reversed"] }],
+        },
+      }) + "\n",
+    );
+
+    const clock = new FakeClock(Date.parse("2026-07-08T12:00:00.000Z"));
+    const app = await createHttpServer({
+      config: loadConfig({ env: {}, envFilePath: false }),
+      epoch: "fresh-epoch",
+      mockMode: true,
+      clock,
+      recordingDir,
+      serveStatic: false,
+      logger: false,
+    });
+
+    // Prior runs are back, with correct post-restart statuses.
+    const runsBefore = (await app.inject({ method: "GET", url: "/api/runs" })).json();
+    expect(runsBefore.runs).toHaveLength(2);
+    const byId = Object.fromEntries(
+      runsBefore.runs.map((r: { run_id: string }) => [r.run_id, r]),
+    );
+    expect(byId[completeRunId].status).toBe("passed");
+    expect(byId[partialRunId].status).toBe("partial");
+
+    // The rehydrated high-water mark: three events (2 + 1) renumbered to 1..3,
+    // erasing the stale per-session seq (10, 11, 4) from the recordings.
+    const cursor = Math.max(
+      ...runsBefore.runs.flatMap((r: { events: { seq: number }[] }) =>
+        r.events.map((e) => e.seq),
+      ),
+    );
+    expect(cursor).toBe(3);
+
+    // A fresh live run must emit events ABOVE the rehydrated cursor, so a
+    // client polling since=cursor still receives them (the restart-cursor bug).
+    await app.inject({ method: "POST", url: "/api/runs", payload: { scenarios: ["e"] } });
+    await flushAsyncWork();
+
+    const delta = (
+      await app.inject({ method: "GET", url: `/api/events?since=${cursor}` })
+    ).json<{ events: RunEvent[] }>();
+    expect(delta.events.length).toBeGreaterThan(0);
+    expect(delta.events.every((e) => e.seq > cursor)).toBe(true);
+    expect(delta.events.some((e) => e.type === "run.started" && e.scenario_id === "e")).toBe(true);
 
     await app.close();
   });

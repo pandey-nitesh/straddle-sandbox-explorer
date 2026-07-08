@@ -58,6 +58,8 @@ Runtime shape:
 
 **Process identity (`epoch`).** The server generates `epoch = crypto.randomUUID()` at boot. Every `/api/events` and `/api/health` response carries it. `seq` is globally monotonic *per process*; a client whose stored epoch differs from the response epoch discards its state and re-hydrates from `GET /api/runs`. Without this, a server restart during development leaves the browser polling a stale cursor forever.
 
+**Registry rehydration (P2-R.1).** The registry is in-memory, but "in-memory" no longer means "blank on restart." At boot the server reloads `runs/*.jsonl` and rebuilds the registry from that recorded evidence, so `/api/runs`, `/api/report`, and the recordings list survive a restart. Because `seq` collides across past sessions (each restarted its counter at 1), historical events are **renumbered** into one deterministic time-ordered stream `1..N` and the live bus starts at `N+1` — seq stays globally monotonic across the restart, so a client's `max(seq)` cursor keeps advancing into fresh live events instead of stalling below them. A still-fresh `epoch` is issued, so live clients still reset and re-hydrate per the paragraph above; on-disk recordings keep their original per-file seq (replay reads one file's self-consistent sequence and never mixes it with the live registry). A rehydrated run whose recording lacks a `run.completed` line belongs to a dead process and surfaces as `partial` (§5), never `running`. Corrupt/truncated recording lines obey the valid-prefix rule (§11): a file is read up to its first unparseable line and the remainder is discarded and counted in a boot log.
+
 ## 4. Repository Layout and Toolchain
 
 ```text

@@ -63,6 +63,13 @@ export type CreateBusOptions = {
    * swallowed, and never propagated to the emitter or other subscribers.
    */
   onSubscriberError?: (error: unknown, event: RunEvent) => void;
+  /**
+   * First seq this bus assigns (default 1). Boot-time rehydration (spec §3,
+   * P2-R.1) renumbers historical events into 1..N and starts the live bus at
+   * N+1 so seq stays monotonic across a restart and client cursors keep
+   * advancing. Must be a positive integer.
+   */
+  startSeq?: number;
 };
 
 export function createBus(options: CreateBusOptions = {}): EventBus {
@@ -77,7 +84,10 @@ export function createBus(options: CreateBusOptions = {}): EventBus {
       );
     });
 
-  let nextSeq = 1;
+  let nextSeq =
+    options.startSeq !== undefined && Number.isInteger(options.startSeq)
+      ? Math.max(1, options.startSeq)
+      : 1;
   const subscribers: Array<(e: RunEvent) => void> = [];
 
   return {

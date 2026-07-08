@@ -32,6 +32,12 @@ interface MutableRun {
   started: RunStartedEvent;
   completed?: RunCompletedEvent;
   events: RunEvent[];
+  /**
+   * True for runs recovered from disk at boot (P2-R.1). A rehydrated run whose
+   * recording lacks a `run.completed` line belongs to a dead process, so it is
+   * `partial` (spec §5), never `running` — nothing will ever finish it.
+   */
+  rehydrated: boolean;
 }
 
 export interface RunRegistry {
@@ -39,6 +45,14 @@ export interface RunRegistry {
   allEvents(): RunEvent[];
   snapshot(): RegistrySnapshot;
   report(options?: { generatedAt?: string; recordingDir?: string }): Report;
+  /**
+   * Ingest historical events recovered from `runs/*.jsonl` at boot (spec §3,
+   * P2-R.1). Events must already be renumbered into this process's seq space
+   * (see `loadRecordedEvents`). Ingested directly, NOT through the bus — they
+   * are already recorded on disk, so re-emitting them would double-write and
+   * re-assign seq. Call once at boot, before any live run starts.
+   */
+  hydrate(events: readonly RunEvent[]): void;
 }
 
 export function createRunRegistry(bus: EventBus): RunRegistry {
@@ -48,7 +62,7 @@ export function createRunRegistry(bus: EventBus): RunRegistry {
   bus.subscribe((event) => {
     events.push(event);
     if (event.type === "run.started") {
-      runs.set(event.run_id, { started: event, events: [event] });
+      runs.set(event.run_id, { started: event, events: [event], rehydrated: false });
       return;
     }
     const run = runs.get(event.run_id);
@@ -64,6 +78,22 @@ export function createRunRegistry(bus: EventBus): RunRegistry {
 
     allEvents(): RunEvent[] {
       return [...events];
+    },
+
+    hydrate(historical: readonly RunEvent[]): void {
+      for (const event of historical) {
+        events.push(event);
+        if (event.type === "run.started") {
+          runs.set(event.run_id, { started: event, events: [event], rehydrated: true });
+          continue;
+        }
+        const run = runs.get(event.run_id);
+        // An event whose run.started was lost to a corrupt first line is an
+        // orphan — there is no run to attach it to, so drop it.
+        if (run === undefined) continue;
+        run.events.push(event);
+        if (event.type === "run.completed") run.completed = event;
+      }
     },
 
     snapshot(): RegistrySnapshot {
@@ -113,11 +143,13 @@ function toSnapshot(
     scenario_id: run.started.scenario_id,
     scenario: run.started.scenario,
     status:
-      completed === undefined
-        ? "running"
-        : completed.result === "passed"
+      completed !== undefined
+        ? completed.result === "passed"
           ? "passed"
-          : "failed",
+          : "failed"
+        : run.rehydrated
+          ? "partial"
+          : "running",
     started_at: run.started.timestamp,
     ...(completed !== undefined
       ? {
