@@ -11,6 +11,7 @@ import { parseScenarioSelection } from "../engine/scenarios.js";
 import { createMockStraddleClient } from "../straddle/mock.js";
 import { createStraddleClient } from "../straddle/client.js";
 import type { Clock, StraddleClient } from "../straddle/types.js";
+import { SSE_HEARTBEAT_MS, resolveResumePoint, sseComment, sseFrame } from "./sse.js";
 
 export interface RegisterRoutesOptions {
   epoch: string;
@@ -21,6 +22,8 @@ export interface RegisterRoutesOptions {
   recordingDir: string;
   mockMode?: boolean;
   clientFactory?: (context: RunContext) => StraddleClient;
+  /** SSE heartbeat cadence (P2-R.4); tests may shorten it. */
+  sseHeartbeatMs?: number;
 }
 
 interface RunsPostBody {
@@ -168,29 +171,42 @@ export async function registerRoutes(
   app.get<{ Querystring: { since?: string; once?: string } }>(
     "/api/events/stream",
     async (request, reply) => {
-      const rawSince = request.query.since ?? "0";
-      if (!/^\d+$/.test(rawSince)) {
+      const rawSince = request.query.since;
+      if (rawSince !== undefined && !/^\d+$/.test(rawSince)) {
         return reply.code(400).send({ error: "since must be a non-negative integer" });
       }
-      const since = Number.parseInt(rawSince, 10);
+      // Last-Event-ID (native EventSource reconnect) is authoritative; ?since is
+      // the first-connect fallback (P2-R.4).
+      const lastEventId = request.headers["last-event-id"];
+      const since = resolveResumePoint(
+        rawSince,
+        Array.isArray(lastEventId) ? lastEventId[0] : lastEventId,
+      );
       reply.hijack();
       reply.raw.writeHead(200, {
         "content-type": "text/event-stream; charset=utf-8",
         "cache-control": "no-cache, no-transform",
         connection: "keep-alive",
       });
-      writeSse(reply.raw, "epoch", { epoch: options.epoch });
+      reply.raw.write(sseFrame("epoch", { epoch: options.epoch }));
       for (const event of options.registry.eventsSince(since)) {
-        writeSse(reply.raw, "run-event", event);
+        reply.raw.write(sseFrame("run-event", event, event.seq));
       }
       if (request.query.once === "1") {
         reply.raw.end();
         return;
       }
       const unsubscribe = options.bus.subscribe((event) => {
-        writeSse(reply.raw, "run-event", event);
+        reply.raw.write(sseFrame("run-event", event, event.seq));
       });
+      // Heartbeat comments keep proxies from reaping the idle stream and let a
+      // dead peer surface as a write error (P2-R.4).
+      const heartbeat = setInterval(() => {
+        reply.raw.write(sseComment("keep-alive"));
+      }, options.sseHeartbeatMs ?? SSE_HEARTBEAT_MS);
+      if (typeof heartbeat.unref === "function") heartbeat.unref();
       request.raw.on("close", () => {
+        clearInterval(heartbeat);
         unsubscribe();
       });
     },
@@ -232,9 +248,4 @@ async function listRecordings(recordingDir: string): Promise<RecordingSummary[]>
 
 function isSafeRunId(runId: string): boolean {
   return /^[A-Za-z0-9._-]+$/.test(runId);
-}
-
-function writeSse(raw: NodeJS.WritableStream, event: string, data: unknown): void {
-  raw.write(`event: ${event}\n`);
-  raw.write(`data: ${JSON.stringify(data)}\n\n`);
 }

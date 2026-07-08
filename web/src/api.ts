@@ -259,6 +259,17 @@ export interface EventPollerOptions {
   epochGate?: EpochGate;
   /** Injectable EventSource factory; tests can force fallback by omitting it. */
   eventSourceFactory?: (url: string) => EventSource;
+  /**
+   * SSE hardening (P2-R.4). On an SSE drop the poller reconnects with
+   * exponential backoff up to `sseMaxRetries` times; past that it downgrades to
+   * polling and periodically ({@link EventPollerOptions.sseUpgradeIntervalMs})
+   * retries upgrading back to SSE. A received event proves the link healthy and
+   * resets the failure count.
+   */
+  sseMaxRetries?: number;
+  sseReconnectMinMs?: number;
+  sseReconnectMaxMs?: number;
+  sseUpgradeIntervalMs?: number;
 }
 
 export interface EventPoller {
@@ -290,17 +301,47 @@ export function createEventPoller(options: EventPollerOptions): EventPoller {
     (options.fetchFn === undefined && typeof EventSource !== "undefined"
       ? (url: string) => new EventSource(url)
       : undefined);
+  const useSse = eventSourceFactory !== undefined;
+  const sseMaxRetries = options.sseMaxRetries ?? 3;
+  const sseReconnectMinMs = options.sseReconnectMinMs ?? 1_000;
+  const sseReconnectMaxMs = options.sseReconnectMaxMs ?? 30_000;
+  const sseUpgradeIntervalMs = options.sseUpgradeIntervalMs ?? 30_000;
 
   let cursor = 0;
   let hydrated = false;
   let running = false;
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  // Exactly one of these transports is active at a time; `mode` gates the poll
+  // loop's self-rescheduling so an in-flight tick can't re-arm polling after we
+  // switch to SSE.
+  let mode: "sse" | "polling" = "polling";
+  let pollTimer: ReturnType<typeof setTimeout> | undefined;
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  let upgradeTimer: ReturnType<typeof setInterval> | undefined;
   let inFlight: Promise<void> | null = null;
   let source: EventSource | null = null;
+  let sseFailures = 0;
 
   function invalidate(): void {
     cursor = 0;
     hydrated = false;
+  }
+  function clearPollTimer(): void {
+    if (pollTimer !== undefined) clearTimeout(pollTimer);
+    pollTimer = undefined;
+  }
+  function clearReconnectTimer(): void {
+    if (reconnectTimer !== undefined) clearTimeout(reconnectTimer);
+    reconnectTimer = undefined;
+  }
+  function clearUpgradeTimer(): void {
+    if (upgradeTimer !== undefined) clearInterval(upgradeTimer);
+    upgradeTimer = undefined;
+  }
+  function closeSource(): void {
+    if (source !== null) {
+      source.close();
+      source = null;
+    }
   }
 
   async function hydrate(): Promise<void> {
@@ -345,77 +386,131 @@ export function createEventPoller(options: EventPollerOptions): EventPoller {
   }
 
   function loop(): void {
-    if (!running) return;
+    if (!running || mode !== "polling") return;
     void tick().finally(() => {
-      if (!running) return;
-      timer = setTimeout(loop, intervalMs);
+      if (!running || mode !== "polling") return;
+      pollTimer = setTimeout(loop, intervalMs);
     });
   }
 
+  /** Enter polling mode. `withUpgrade` arms a periodic retry back to SSE. */
+  function enterPolling(withUpgrade: boolean): void {
+    closeSource();
+    clearReconnectTimer();
+    mode = "polling";
+    loop();
+    if (withUpgrade && upgradeTimer === undefined) {
+      upgradeTimer = setInterval(() => {
+        if (running) void startSse();
+      }, sseUpgradeIntervalMs);
+    }
+  }
+
+  /** An SSE connection broke: back off and reconnect, or downgrade past a cap. */
+  function onSseBroken(): void {
+    closeSource();
+    if (!running) return;
+    sseFailures += 1;
+    if (sseFailures <= sseMaxRetries) {
+      const delay = Math.min(
+        sseReconnectMaxMs,
+        sseReconnectMinMs * 2 ** (sseFailures - 1),
+      );
+      clearReconnectTimer();
+      reconnectTimer = setTimeout(() => {
+        if (running) void startSse();
+      }, delay);
+    } else {
+      // Give up on SSE for now: poll, but keep trying to climb back to SSE.
+      enterPolling(true);
+    }
+  }
+
   async function startSse(): Promise<void> {
+    if (!running) return;
+    clearReconnectTimer();
     try {
       if (!hydrated) await hydrate();
-      if (!running || source !== null) return;
-      source = eventSourceFactory?.(`/api/events/stream?since=${cursor}`) ?? null;
-      if (source === null) {
-        loop();
-        return;
-      }
-      source.addEventListener("epoch", (message: MessageEvent<string>) => {
-        try {
-          const payload = JSON.parse(message.data) as { epoch: string };
-          if (gate.check(payload.epoch) === "mismatch") {
-            source?.close();
-            source = null;
-            invalidate();
-            if (running) void startSse();
-          }
-        } catch (error) {
-          handlers.onError?.(error);
-        }
-      });
-      source.addEventListener("run-event", (message: MessageEvent<string>) => {
-        try {
-          const event = RunEventSchema.parse(JSON.parse(message.data));
-          cursor = Math.max(cursor, event.seq);
-          handlers.onEvents([event]);
-        } catch (error) {
-          handlers.onError?.(error);
-        }
-      });
-      source.onerror = () => {
-        source?.close();
-        source = null;
-        if (running) loop();
-      };
     } catch (error) {
       handlers.onError?.(error);
-      if (running) loop();
+      onSseBroken();
+      return;
     }
+    if (!running) return;
+    closeSource();
+    clearPollTimer(); // SSE takes over from any fallback polling
+    const opened = eventSourceFactory?.(`/api/events/stream?since=${cursor}`) ?? null;
+    if (opened === null) {
+      enterPolling(false); // no EventSource available → plain polling
+      return;
+    }
+    mode = "sse";
+    source = opened;
+    source.addEventListener("epoch", (message: MessageEvent<string>) => {
+      try {
+        const payload = JSON.parse(message.data) as { epoch: string };
+        if (gate.check(payload.epoch) === "mismatch") {
+          // Server restart: reconnect fresh (re-hydrates). Not a failure.
+          closeSource();
+          invalidate();
+          if (running) void startSse();
+        }
+      } catch (error) {
+        handlers.onError?.(error);
+      }
+    });
+    source.addEventListener("run-event", (message: MessageEvent<string>) => {
+      try {
+        const event = RunEventSchema.parse(JSON.parse(message.data));
+        // A delivered event proves the link healthy: reset the failure count
+        // and cancel any fallback polling / upgrade retries.
+        sseFailures = 0;
+        clearUpgradeTimer();
+        clearPollTimer();
+        clearReconnectTimer();
+        cursor = Math.max(cursor, event.seq);
+        handlers.onEvents([event]);
+      } catch (error) {
+        handlers.onError?.(error);
+      }
+    });
+    source.onerror = () => {
+      onSseBroken();
+    };
   }
 
   return {
     start(): void {
       if (running) return;
       running = true;
-      if (eventSourceFactory !== undefined) void startSse();
-      else loop();
+      sseFailures = 0;
+      if (useSse) void startSse();
+      else {
+        mode = "polling";
+        loop();
+      }
     },
     stop(): void {
       running = false;
-      if (source !== null) {
-        source.close();
-        source = null;
-      }
-      if (timer !== undefined) clearTimeout(timer);
-      timer = undefined;
+      closeSource();
+      clearPollTimer();
+      clearReconnectTimer();
+      clearUpgradeTimer();
     },
     tick,
     cursor: () => cursor,
     observeEpoch(epoch: string): void {
       if (gate.check(epoch) !== "mismatch") return;
       invalidate();
-      if (running) void tick();
+      if (!running) return;
+      if (useSse) {
+        // Reconnect the stream fresh so it re-hydrates in the new epoch.
+        closeSource();
+        clearReconnectTimer();
+        void startSse();
+      } else {
+        void tick();
+      }
     },
   };
 }
