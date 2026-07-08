@@ -180,6 +180,9 @@ describe("runner", () => {
           getCustomerReview: (id) => mock.getCustomerReview(id),
           createPaykey: (input) => mock.createPaykey(input),
           createCharge: (input) => mock.createCharge(input),
+          holdCharge: (id, opts) => mock.holdCharge(id, opts),
+          releaseCharge: (id, opts) => mock.releaseCharge(id, opts),
+          cancelCharge: (id, opts) => mock.cancelCharge(id, opts),
           getCharge: (id) => {
             getChargeCalls += 1;
             // The first two polls hit a retryable-exhausted 503 (a transient

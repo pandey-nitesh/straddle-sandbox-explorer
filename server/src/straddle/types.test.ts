@@ -111,6 +111,15 @@ const fakeClient: StraddleClient = {
   async getCharge(_chargeId: string): Promise<ChargeResult> {
     return charge;
   },
+  async holdCharge(_chargeId: string): Promise<ChargeResult> {
+    return charge;
+  },
+  async releaseCharge(_chargeId: string): Promise<ChargeResult> {
+    return charge;
+  },
+  async cancelCharge(_chargeId: string): Promise<ChargeResult> {
+    return charge;
+  },
 };
 
 describe("StraddleClient boundary types", () => {

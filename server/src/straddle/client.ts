@@ -1,9 +1,11 @@
+import { randomUUID } from "node:crypto";
 import { SANDBOX_BASE_URL } from "../config.js";
 import type { EventBus } from "../engine/bus.js";
 import { RealClock } from "../engine/runner.js";
 import { createRedactor, type Redactor } from "../redaction.js";
 import { StraddleApiError } from "./errors.js";
 import type {
+  ChargeActionOptions,
   ChargeInput,
   ChargeResult,
   Clock,
@@ -149,6 +151,51 @@ class FetchStraddleClient implements StraddleClient {
 
   async getCharge(chargeId: string): Promise<ChargeResult> {
     const envelope = await this.request<JsonObject>("GET", `/v1/charges/${chargeId}`);
+    return dataOf(envelope) as unknown as ChargeResult;
+  }
+
+  async holdCharge(
+    chargeId: string,
+    opts?: ChargeActionOptions,
+  ): Promise<ChargeResult> {
+    return this.chargeAction(chargeId, "hold", opts);
+  }
+
+  async releaseCharge(
+    chargeId: string,
+    opts?: ChargeActionOptions,
+  ): Promise<ChargeResult> {
+    return this.chargeAction(chargeId, "release", opts);
+  }
+
+  async cancelCharge(
+    chargeId: string,
+    opts?: ChargeActionOptions,
+  ): Promise<ChargeResult> {
+    return this.chargeAction(chargeId, "cancel", opts);
+  }
+
+  /**
+   * PUT /v1/charges/{id}/{hold|release|cancel} (api-notes §P11). Body is the
+   * optional `{ reason }`; the `Idempotency-Key` header defaults to a UUID
+   * (36 chars — under the ≤40-char cap, api-notes §12 item 9). The shared
+   * request() path handles `api.exchange` per attempt, redaction-before-
+   * construct, and retry/backoff — so the §12.20 transient 500 is retried
+   * automatically (it is retryable by the §6 error model).
+   */
+  private async chargeAction(
+    chargeId: string,
+    action: "hold" | "release" | "cancel",
+    opts?: ChargeActionOptions,
+  ): Promise<ChargeResult> {
+    const body =
+      opts?.reason !== undefined ? { reason: opts.reason } : {};
+    const envelope = await this.request<JsonObject>(
+      "PUT",
+      `/v1/charges/${chargeId}/${action}`,
+      body,
+      { idempotencyKey: opts?.idempotencyKey ?? randomUUID() },
+    );
     return dataOf(envelope) as unknown as ChargeResult;
   }
 
