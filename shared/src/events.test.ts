@@ -9,6 +9,7 @@ import {
   RunStartedEventSchema,
   RUN_EVENT_TYPES,
   ScenarioAssertionEventSchema,
+  WebhookReceivedEventSchema,
   type RunEvent,
 } from "./events.js";
 
@@ -92,6 +93,16 @@ const fixtures: Record<(typeof RUN_EVENT_TYPES)[number], unknown> = {
     result: "failed",
     duration_ms: 351_000,
     recording_path: "runs/run-20260707T062143Z-c-9f3a.jsonl",
+  },
+  "webhook.received": {
+    ...base,
+    type: "webhook.received",
+    event_id: "msg_2abc...", // Svix webhook id (dedup key)
+    webhook_type: "charge.event.v1", // reversals ride the generic charge event
+    verified: true,
+    resource_id: "0197e5b3-fake-chg",
+    delivered_at: "2026-07-07T06:27:31.0210043Z",
+    detail: { type: "charge.event.v1", data: { status: "reversed" } }, // post-redaction summary
   },
 };
 
@@ -263,6 +274,33 @@ describe("per-event field validation", () => {
         ...(fixtures["run.completed"] as Record<string, unknown>),
         result: "partial",
       }).success,
+    ).toBe(false);
+  });
+
+  it("webhook.received accepts the minimal correlated shape (optionals absent)", () => {
+    expect(
+      WebhookReceivedEventSchema.safeParse({
+        ...base,
+        type: "webhook.received",
+        event_id: "msg_1",
+        webhook_type: "charge.event.v1",
+        verified: false,
+      }).success,
+    ).toBe(true);
+  });
+
+  it("webhook.received requires event_id, webhook_type, and verified", () => {
+    const full = fixtures["webhook.received"] as Record<string, unknown>;
+    for (const field of ["event_id", "webhook_type", "verified"]) {
+      const { [field]: _omitted, ...rest } = full;
+      expect(
+        WebhookReceivedEventSchema.safeParse(rest).success,
+        `expected missing ${field} to reject`,
+      ).toBe(false);
+    }
+    // verified is a boolean, not a truthy string
+    expect(
+      WebhookReceivedEventSchema.safeParse({ ...full, verified: "yes" }).success,
     ).toBe(false);
   });
 });

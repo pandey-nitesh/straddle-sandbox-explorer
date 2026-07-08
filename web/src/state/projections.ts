@@ -647,5 +647,8 @@ function summarizeEvent(event: RunState["events"][number]): string {
       return event.result;
     case "run.started":
       return event.scenario.label;
+    case "webhook.received":
+      // Stored/inspectable but not yet surfaced in a dedicated pane (P2-3.4).
+      return `webhook ${event.webhook_type} ${event.verified ? "verified" : "unverified"}`;
   }
 }
