@@ -8,6 +8,7 @@ import { attachRecorder } from "./recorder.js";
 import { runScenarios } from "./runner.js";
 import { createMockStraddleClient } from "../straddle/mock.js";
 import { FakeClock } from "../straddle/fake-clock.js";
+import type { StraddleClient } from "../straddle/types.js";
 
 describe("runner", () => {
   it("runs A-E against the scripted mock and writes a schema-valid report", async () => {
@@ -139,6 +140,77 @@ describe("runner", () => {
       .map((line) => JSON.parse(line) as RunEvent);
     expect(events.some((e) => e.type === "run.started")).toBe(true);
     expect(events.some((e) => e.type === "run.completed")).toBe(false);
+  });
+
+  it("polls through transient sandbox failures without failing the run (P2-R.3)", async () => {
+    const clock = new FakeClock(Date.parse("2026-07-07T12:00:00.000Z"));
+    const bus = createBus({ now: () => new Date(clock.now()) });
+    const events: RunEvent[] = [];
+    bus.subscribe((event) => events.push(event));
+    const dir = mkdtempSync(path.join(tmpdir(), "straddle-runner-transient-"));
+    const runsDir = path.join(dir, "runs");
+    const reportPath = path.join(dir, "report.json");
+    attachRecorder(bus, runsDir);
+
+    let getChargeCalls = 0;
+    const task = runScenarios({
+      scenarios: ["a"],
+      concurrency: "concurrent",
+      bus,
+      clock,
+      recordingDir: runsDir,
+      reportPath,
+      pollPolicy: {
+        baseMinMs: 5_000,
+        baseMaxMs: 5_000,
+        fastMs: 5_000,
+        hardTimeoutMs: 600_000,
+      },
+      clientFactory: (context) => {
+        const mock = createMockStraddleClient({
+          bus,
+          clock,
+          context: { run_id: context.run_id, scenario_id: context.scenario_id },
+        });
+        // Delegate every method explicitly — the mock is a class instance, so
+        // its methods live on the prototype and a spread wouldn't copy them.
+        const flaky: StraddleClient = {
+          health: () => mock.health(),
+          createCustomer: (input) => mock.createCustomer(input),
+          getCustomerReview: (id) => mock.getCustomerReview(id),
+          createPaykey: (input) => mock.createPaykey(input),
+          createCharge: (input) => mock.createCharge(input),
+          getCharge: (id) => {
+            getChargeCalls += 1;
+            // The first two polls hit a retryable-exhausted 503 (a transient
+            // sandbox outage); the run must poll through it, not die.
+            if (getChargeCalls <= 2) {
+              return Promise.reject({
+                status: 503,
+                path: "/v1/charges",
+                retryable: true,
+                errorBody: {},
+              });
+            }
+            return mock.getCharge(id);
+          },
+        };
+        return flaky;
+      },
+    });
+
+    await waitForSleepers(clock);
+    await clock.advance(600_000);
+    await task;
+
+    const report = ReportSchema.parse(JSON.parse(readFileSync(reportPath, "utf8")));
+    const scenarioA = report.scenarios.find((s) => s.id === "a");
+    expect(scenarioA?.status).toBe("passed"); // survived the transient blips
+    expect(scenarioA?.final_status).toBe("paid");
+    expect(getChargeCalls).toBeGreaterThanOrEqual(3);
+    expect(
+      events.some((e) => e.type === "retry.scheduled" && e.attempt >= 2),
+    ).toBe(true);
   });
 
   it("stops before starting new work when already aborted (serial)", async () => {

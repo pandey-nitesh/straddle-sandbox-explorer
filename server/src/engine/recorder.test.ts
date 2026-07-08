@@ -171,18 +171,43 @@ describe("attachRecorder", () => {
     expect(readRecording(recordingPathFor(dir, RUN_A))).toHaveLength(1);
   });
 
-  it("write failures hit the bus isolation policy, not other subscribers", () => {
+  it("recovers when the runs directory is removed mid-run (P2-R.3)", () => {
     const dir = path.join(tempDir(), "runs");
-    const onSubscriberError = vi.fn();
-    const bus: EventBus = createBus({ onSubscriberError });
-    attachRecorder(bus, dir);
+    const onWriteError = vi.fn();
+    const bus: EventBus = createBus();
+    const recorder = createRecorder(bus, dir, { onWriteError });
     const seen: RunEvent[] = [];
     bus.subscribe((e) => seen.push(e));
 
     rmSync(dir, { recursive: true, force: true }); // yank the directory mid-run
     bus.emit(statusChanged(RUN_A, "a", "created"));
 
-    expect(onSubscriberError).toHaveBeenCalledTimes(1);
+    // Recovered: dir recreated, event written, process alive, no failed runs.
+    expect(onWriteError).toHaveBeenCalledWith(expect.objectContaining({ recovered: true }));
     expect(seen).toHaveLength(1); // the later subscriber still got the event
+    expect(readRecording(recordingPathFor(dir, RUN_A))).toHaveLength(1);
+    expect(recorder.failedRuns().size).toBe(0);
+  });
+
+  it("survives an unrecoverable write failure and marks the recording (P2-R.3)", () => {
+    const dir = tempDir();
+    const onWriteError = vi.fn();
+    const bus: EventBus = createBus();
+    const seen: RunEvent[] = [];
+    const recorder = createRecorder(bus, dir, {
+      onWriteError,
+      appendLine: () => {
+        throw new Error("ENOSPC: no space left on device");
+      },
+    });
+    bus.subscribe((e) => seen.push(e));
+
+    // Never throws out of the subscriber, so the process survives.
+    expect(() => bus.emit(statusChanged(RUN_A, "a", "created"))).not.toThrow();
+    expect(onWriteError).toHaveBeenCalledWith(
+      expect.objectContaining({ recovered: false, runId: RUN_A }),
+    );
+    expect(recorder.failedRuns().has(RUN_A)).toBe(true);
+    expect(seen).toHaveLength(1); // other subscribers are unaffected
   });
 });
