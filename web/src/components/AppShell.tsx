@@ -1,4 +1,5 @@
 import type { ButtonHTMLAttributes, ReactNode } from "react";
+import { ErrorBoundary } from "./ErrorBoundary";
 import { Wordmark } from "./Wordmark";
 
 /**
@@ -14,6 +15,12 @@ export interface AppShellProps {
   keyStatus?: "ok" | "missing" | "invalid";
   /** Consecutive poll cycles failed — the server is unreachable. */
   offline?: boolean;
+  /**
+   * Unreachable WHILE runs are live (P2-R.5): the panes are frozen on stale
+   * evidence, so a prominent banner warns the viewer rather than letting a
+   * paused demo read as a finished one.
+   */
+  stale?: boolean;
   onRunAll?: () => void;
   /** Learning-layer toggle (design §6.6); the button renders only when wired. */
   explainEnabled?: boolean;
@@ -53,7 +60,10 @@ function Pane({
       className="flex min-h-0 flex-col overflow-hidden rounded-card bg-surface-card p-4 shadow-card"
     >
       <h2 className="pane-header">{title}</h2>
-      <div className="mt-3 min-h-0 flex-1 overflow-y-auto">{children}</div>
+      <div className="mt-3 min-h-0 flex-1 overflow-y-auto">
+        {/* Per-pane isolation (P2-R.5): a crash here stays here. */}
+        <ErrorBoundary label={title}>{children}</ErrorBoundary>
+      </div>
     </section>
   );
 }
@@ -112,6 +122,17 @@ export function AppShell(props: AppShellProps) {
         <PrimaryButton onClick={props.onRunAll}>Run all</PrimaryButton>
       </header>
 
+      {props.stale === true && (
+        <div
+          role="status"
+          data-testid="stale-banner"
+          className="shrink-0 border-b border-status-fail bg-status-fail/10 px-6 py-2 text-sm text-status-fail"
+        >
+          Live updates paused — the server is unreachable, so what you see may be
+          stale.
+        </div>
+      )}
+
       <main className="grid min-h-0 flex-1 grid-cols-1 gap-4 p-4 xl:grid-cols-[280px_minmax(280px,0.6fr)_minmax(620px,1.4fr)] xl:p-6">
         <Pane title="Scenarios">
           {props.scenarios ?? <Placeholder>Scenarios A–E load here.</Placeholder>}
@@ -141,13 +162,16 @@ export function AppShell(props: AppShellProps) {
 
       <footer className="shrink-0 border-t border-edge bg-surface-card px-6 py-3">
         {/* The summary slot owns the whole strip (RunSummary brings its own
-            Download button); the fallback covers the empty pre-run state. */}
-        {props.summary ?? (
-          <div className="flex items-center justify-between gap-4">
-            <span className="wire-quote text-fg-muted">no runs yet</span>
-            <PrimaryButton disabled>Download report.json</PrimaryButton>
-          </div>
-        )}
+            Download button); the fallback covers the empty pre-run state.
+            Wrapped so a summary-projection crash can't take down the footer. */}
+        <ErrorBoundary label="Summary">
+          {props.summary ?? (
+            <div className="flex items-center justify-between gap-4">
+              <span className="wire-quote text-fg-muted">no runs yet</span>
+              <PrimaryButton disabled>Download report.json</PrimaryButton>
+            </div>
+          )}
+        </ErrorBoundary>
         <p className="mt-2 text-xs text-fg-muted">
           Unofficial developer demo — not affiliated with Straddle Payments Inc.
         </p>

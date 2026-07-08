@@ -344,6 +344,32 @@ describe("event poller", () => {
     expect(collected.hydrations).toHaveLength(1);
   });
 
+  it("re-hydrates when the server signals resync (P2-R.5)", async () => {
+    const server = fakeServer({
+      epoch: "e1",
+      snapshot: snapshotWith([started(1, "run-1")]),
+    });
+    const collected = collectingHandlers();
+    let resyncOnce = true;
+    const withResync: FetchLike = async (input, init) => {
+      if (input.startsWith("/api/events?since=") && resyncOnce) {
+        resyncOnce = false;
+        return json({ epoch: "e1", resync: true, events: [] });
+      }
+      return server.fetchFn(input, init);
+    };
+    const poller = createEventPoller({
+      handlers: collected.handlers,
+      fetchFn: withResync,
+    });
+
+    // One cycle: hydrate → getEvents returns resync → invalidate + re-hydrate.
+    await poller.tick();
+    expect(collected.hydrations.length).toBeGreaterThanOrEqual(2);
+    // The resync batch carried no events and was not delivered as a delta.
+    expect(collected.batches).toEqual([]);
+  });
+
   it("observeEpoch (e.g. from a health response) forces re-hydration on mismatch", async () => {
     const server = fakeServer({ epoch: "e1", snapshot: snapshotWith([started(1, "run-1")]) });
     const collected = collectingHandlers();

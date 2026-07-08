@@ -246,6 +246,9 @@ export function Dashboard({ fetchFn }: DashboardProps) {
       onRunAll={onRunAll}
       keyStatus={keyStatus}
       offline={offline}
+      // Offline WHILE a suite is live means the panes are frozen on stale
+      // evidence (P2-R.5) — surface it loudly, not just as a header chip.
+      stale={offline && suiteLive}
       explainEnabled={explain}
       onToggleExplain={toggleExplain}
       scenarios={

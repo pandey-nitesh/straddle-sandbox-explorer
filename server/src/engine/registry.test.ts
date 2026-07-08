@@ -82,6 +82,37 @@ describe("registry hydrate", () => {
     expect(registry.snapshot().runs).toHaveLength(0);
   });
 
+  it("evicts old delivery events and flags resync, but keeps the full report (P2-R.5)", () => {
+    const bus = createBus();
+    const registry = createRunRegistry(bus, { maxEvents: 2 });
+    bus.emit({ type: "run.started", run_id: "run-a", scenario_id: "c", scenario: scenarioC() }); // seq 1
+    bus.emit({
+      type: "payment.status_changed",
+      run_id: "run-a",
+      scenario_id: "c",
+      resource_id: "chg_1",
+      from: null,
+      to: "pending",
+    }); // seq 2
+    bus.emit({
+      type: "payment.status_changed",
+      run_id: "run-a",
+      scenario_id: "c",
+      resource_id: "chg_1",
+      from: "pending",
+      to: "paid",
+    }); // seq 3 — evicts seq 1 from the 2-slot delivery buffer
+
+    // A cursor at/below the evicted seq needs a full re-hydration.
+    expect(registry.resyncNeeded(0)).toBe(true);
+    expect(registry.resyncNeeded(1)).toBe(false); // seq 1 was the evicted one
+    expect(registry.eventsSince(1).map((e) => e.seq)).toEqual([2, 3]);
+
+    // Full history is intact for the snapshot and report projections.
+    expect(registry.allEvents().map((e) => e.seq)).toEqual([1, 2, 3]);
+    expect(registry.snapshot().runs[0]?.events.map((e) => e.seq)).toEqual([1, 2, 3]);
+  });
+
   it("interleaves hydrated history with subsequent live events by seq", () => {
     // Simulates the boot wiring: bus started above the rehydrated high-water
     // mark, history ingested, then a live event emitted.
