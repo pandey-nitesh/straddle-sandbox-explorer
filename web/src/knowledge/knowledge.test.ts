@@ -54,7 +54,8 @@ describe("knowledge entries", () => {
 
   it("covers every charge status the mock schedules can emit", () => {
     // Mirrors server/src/straddle/mock.ts SCHEDULES (web must not import
-    // server); on_hold additionally covers the enum's remaining member.
+    // server); Scenario H's hold action drives a charge to on_hold, so it is
+    // now genuinely mock-emittable (not just an unreached enum member).
     const mockEmittable = [
       "created",
       "scheduled",
@@ -63,6 +64,7 @@ describe("knowledge entries", () => {
       "failed",
       "reversed",
       "cancelled",
+      "on_hold",
     ];
     for (const status of mockEmittable) {
       expect(statusNote(status), status).toBeDefined();
@@ -91,6 +93,18 @@ describe("knowledge entries", () => {
     expect(disputes).toHaveLength(2);
     for (const outcome of disputes) {
       expect(outcome.danger, outcome.term).toBe("poisons");
+    }
+  });
+
+  it("marks both closed-bank-account outcomes as poisoning (R02, api-notes §12.18)", () => {
+    const closed = ALL_OUTCOMES.filter((o) =>
+      o.term.endsWith("_closed_bank_account"),
+    );
+    expect(closed).toHaveLength(2);
+    for (const outcome of closed) {
+      expect(outcome.danger, outcome.term).toBe("poisons");
+      // The prose teaches R02 abstractly — never a seeded account number.
+      expect(outcome.short, outcome.term).not.toMatch(/987654321|123456789|021000021/);
     }
   });
 });

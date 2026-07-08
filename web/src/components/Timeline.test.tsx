@@ -75,6 +75,34 @@ describe("Timeline nodes", () => {
     expect(screen.getByLabelText("terminal success")).toBeTruthy();
   });
 
+  it("on_hold renders as an inflight slate node — verbatim label, filled dot, distinct from cancelled", () => {
+    // on_hold arrives from the projection as an `inflight` kind (design §3);
+    // it is NON-terminal (a hold that will resume), so no check/code chip and
+    // a filled slate dot — never the hollow cancelled ring (design §12.3).
+    render(
+      <Timeline
+        nodes={[
+          { id: "1", kind: "inflight", status: "created", at: T0 },
+          {
+            id: "2",
+            kind: "inflight",
+            status: "on_hold",
+            at: T1,
+            elapsedMs: 5_000,
+          },
+        ]}
+      />,
+    );
+    const label = screen.getByText("on_hold");
+    expect(label.className).toContain("text-status-inflight");
+    expect(label.className).toContain("wire-quote"); // mono, verbatim
+    const dots = screen.getAllByTestId("dot");
+    const held = dots[dots.length - 1]!;
+    expect(held.className).toContain("bg-status-inflight"); // filled slate
+    expect(held.className).not.toContain("border-status-cancelled"); // not hollow
+    expect(screen.queryByLabelText("terminal success")).toBeNull();
+  });
+
   it("cancelled is a hollow slate ring with the reason underneath", () => {
     render(
       <Timeline

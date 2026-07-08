@@ -81,9 +81,10 @@ export const CHARGE_STATUSES: readonly KnowledgeEntry[] = [
     term: "on_hold",
     category: "charge-status",
     short:
-      "Paused pending action — in the enum for outcomes like on_hold_daily_limit.",
-    detail: "Never observed live during M0 probing; treat as unverified.",
-    source: "api-notes §8",
+      "Paused mid-pipeline — a non-terminal hold that never settles on its own; it either resumes or is cancelled.",
+    detail:
+      "Two ways in: the PUT /v1/charges/{id}/hold action (reason user_request, source user_action) and the on_hold_daily_limit sandbox outcome, which lands an automatic watchtower hold. A hold is not terminal — release returns the charge to created and the pipeline runs again (it does NOT jump straight to paid), while cancel takes it to a terminal cancelled instead.",
+    source: "api-notes §P11, §12.20",
   },
 ];
 
