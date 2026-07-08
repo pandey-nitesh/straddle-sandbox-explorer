@@ -1,8 +1,11 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
+import type { RunEvent, ScenarioDef } from "@sse/shared";
 import { loadConfig } from "../config.js";
 import { createRedactor } from "../redaction.js";
+import { createBus } from "../engine/bus.js";
+import { createRunRegistry } from "../engine/registry.js";
 import { createHttpServer } from "./server.js";
 import {
   createWebhookInbox,
@@ -338,6 +341,93 @@ describe("POST /api/webhooks/straddle (modes)", () => {
     // Nothing trusted / stored as accepted.
     const inbox = await listInbox(app);
     expect(inbox.filter((e) => e.status === "accepted")).toHaveLength(0);
+    await app.close();
+  });
+});
+
+describe("POST /api/webhooks/straddle → correlation (P2-3.3)", () => {
+  const RUN_ID = "run-20260708T120000Z-c-ab12";
+
+  function scenarioC(): ScenarioDef {
+    return {
+      id: "c",
+      label: "C. Reversal",
+      purpose: "Mock/replay reversal evidence.",
+      outcomes: { customer: "verified", paykey: "active", charge: "reversed_insufficient_funds" },
+      requiredObservations: [{ kind: "ordered_statuses", statuses: ["paid", "reversed"] }],
+    };
+  }
+
+  it("emits webhook.received for a known run so /api/events includes it", async () => {
+    const bus = createBus();
+    const registry = createRunRegistry(bus);
+    const app = await createHttpServer({
+      config: loadConfig({ env: { STRADDLE_WEBHOOK_SECRET: TEST_SECRET }, envFilePath: false }),
+      epoch: "test-epoch",
+      bus,
+      registry,
+      mockMode: true,
+      attachRecorder: false,
+      serveStatic: false,
+      logger: false,
+    });
+    // A known live run the webhook can correlate to (external_id = run_id).
+    bus.emit({ type: "run.started", run_id: RUN_ID, scenario_id: "c", scenario: scenarioC() });
+
+    const id = "msg_corr";
+    const ts = nowSec();
+    const body = JSON.stringify({
+      type: "charge.event.v1",
+      data: { id: "chg_corr", external_id: RUN_ID },
+    });
+    const res = await post(app, body, { id, timestamp: ts, signature: sign(TEST_SECRET, id, ts, body) });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().status).toBe("accepted");
+
+    const events = (await app.inject({ method: "GET", url: "/api/events?since=0" })).json<{
+      events: RunEvent[];
+    }>().events;
+    const webhookEvents = events.filter((e) => e.type === "webhook.received");
+    expect(webhookEvents).toHaveLength(1);
+    expect(webhookEvents[0]).toMatchObject({
+      run_id: RUN_ID,
+      scenario_id: "c",
+      event_id: id,
+      webhook_type: "charge.event.v1",
+      verified: true,
+      resource_id: "chg_corr",
+    });
+    // Polling authority: no synthesized payment.status_changed from the webhook.
+    expect(events.some((e) => e.type === "payment.status_changed")).toBe(false);
+    await app.close();
+  });
+
+  it("does not emit for a webhook that matches no run", async () => {
+    const bus = createBus();
+    const registry = createRunRegistry(bus);
+    const app = await createHttpServer({
+      config: loadConfig({ env: { STRADDLE_WEBHOOK_SECRET: TEST_SECRET }, envFilePath: false }),
+      epoch: "test-epoch",
+      bus,
+      registry,
+      mockMode: true,
+      attachRecorder: false,
+      serveStatic: false,
+      logger: false,
+    });
+
+    const id = "msg_unmatched";
+    const ts = nowSec();
+    const body = JSON.stringify({ type: "charge.event.v1", data: { id: "chg_ghost", external_id: "run-nope" } });
+    const res = await post(app, body, { id, timestamp: ts, signature: sign(TEST_SECRET, id, ts, body) });
+    expect(res.statusCode).toBe(200); // still accepted into the inbox
+
+    const events = (await app.inject({ method: "GET", url: "/api/events?since=0" })).json<{
+      events: RunEvent[];
+    }>().events;
+    expect(events.some((e) => e.type === "webhook.received")).toBe(false);
+    // But the inbox retains it (unmatched, not dropped).
+    expect((await listInbox(app)).some((e) => e.event_id === id && e.status === "accepted")).toBe(true);
     await app.close();
   });
 });
