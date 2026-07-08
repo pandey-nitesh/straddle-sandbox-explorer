@@ -1,5 +1,6 @@
 import { loadConfig } from "./config.js";
 import { createHttpServer } from "./http/server.js";
+import { installGracefulShutdown } from "./http/shutdown.js";
 
 export async function main(): Promise<void> {
   const config = loadConfig();
@@ -11,6 +12,8 @@ export async function main(): Promise<void> {
     ...(mockMode ? { mockMode: true } : {}),
   });
   await app.listen({ port: config.port, host: "127.0.0.1" });
+  // Drain connections on Ctrl-C / SIGTERM instead of dropping them (P2-R.2).
+  installGracefulShutdown(app);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

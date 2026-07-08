@@ -1,5 +1,5 @@
 import { createBus } from "./engine/bus.js";
-import { attachRecorder } from "./engine/recorder.js";
+import { createRecorder } from "./engine/recorder.js";
 import { runScenarios } from "./engine/runner.js";
 import { parseScenarioSelection } from "./engine/scenarios.js";
 import { loadConfig } from "./config.js";
@@ -19,7 +19,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const args = parseArgs(argv);
   const config = loadConfig();
   const bus = createBus();
-  attachRecorder(bus, args.recordingDir);
+  const recorder = createRecorder(bus, args.recordingDir);
   const scenarioIds = parseScenarioSelection({
     all: args.all,
     scenarios: args.scenarios,
@@ -49,34 +49,64 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     }
   }
 
-  const result = await runScenarios({
-    scenarios: scenarioIds,
-    concurrency: args.serial ? "serial" : "concurrent",
-    bus,
-    recordingDir: args.recordingDir,
-    reportPath: args.reportPath,
-    pollPolicy: config.pollPolicyOverrides,
-    mode: args.mock ? "contract" : "live",
-    clientFactory: (context) =>
-      args.mock
-        ? createMockStraddleClient({
-            bus,
-            clock: context.clock,
-            context: {
-              run_id: context.run_id,
-              scenario_id: context.scenario_id,
-            },
-          })
-        : createStraddleClient({
-            apiKey: config.straddleApiKey ?? "",
-            bus,
-            clock: context.clock,
-            context: {
-              run_id: context.run_id,
-              scenario_id: context.scenario_id,
-            },
-          }),
-  });
+  // Interrupt-safe shutdown (P2-R.2): Ctrl-C / SIGTERM aborts the suite; the
+  // runner snapshots a partial report and we exit non-zero. Handlers are
+  // removed once the suite settles so repeated CLI invocations don't leak them.
+  const abort = new AbortController();
+  let signalName: NodeJS.Signals | undefined;
+  const onSignal = (signal: NodeJS.Signals): void => {
+    signalName = signal;
+    abort.abort();
+  };
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+
+  let result;
+  try {
+    result = await runScenarios({
+      scenarios: scenarioIds,
+      concurrency: args.serial ? "serial" : "concurrent",
+      bus,
+      recordingDir: args.recordingDir,
+      reportPath: args.reportPath,
+      pollPolicy: config.pollPolicyOverrides,
+      mode: args.mock ? "contract" : "live",
+      signal: abort.signal,
+      clientFactory: (context) =>
+        args.mock
+          ? createMockStraddleClient({
+              bus,
+              clock: context.clock,
+              context: {
+                run_id: context.run_id,
+                scenario_id: context.scenario_id,
+              },
+            })
+          : createStraddleClient({
+              apiKey: config.straddleApiKey ?? "",
+              bus,
+              clock: context.clock,
+              context: {
+                run_id: context.run_id,
+                scenario_id: context.scenario_id,
+              },
+            }),
+    });
+  } finally {
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+  }
+
+  if (result.interrupted) {
+    // The report snapshot and recordings (valid prefixes) are already durable;
+    // flush is the explicit shutdown seam. Force-exit so abandoned in-flight
+    // pollers don't keep the event loop alive until the hard timeout.
+    await recorder.flush();
+    console.error(
+      `interrupted${signalName === undefined ? "" : ` (${signalName})`} — wrote partial ${args.reportPath}; unfinished runs left as partial evidence`,
+    );
+    process.exit(130);
+  }
 
   // Keep stdout human-safe and terse; detailed evidence lives in report/runs.
   const report = result.report;
