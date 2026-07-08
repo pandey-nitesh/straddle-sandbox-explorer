@@ -80,6 +80,63 @@ describe("loadConfig API key opacity", () => {
   });
 });
 
+describe("loadConfig webhook secret + unsigned flag", () => {
+  // SYNTHETIC secret — never real key material (repo rule).
+  const FAKE_SECRET = "whsec_ZmFrZS13ZWJob29rLXNlY3JldA==";
+
+  it("defaults to no secret and unsigned disabled", () => {
+    const config = loadConfig({ env: {}, envFilePath: false });
+    expect(config.webhookSecretPresent).toBe(false);
+    expect(config.straddleWebhookSecret).toBeUndefined();
+    expect(config.allowUnsignedWebhooks).toBe(false);
+  });
+
+  it("parses the webhook secret and sets the present flag", () => {
+    const config = loadConfig({
+      env: { STRADDLE_WEBHOOK_SECRET: FAKE_SECRET },
+      envFilePath: false,
+    });
+    expect(config.webhookSecretPresent).toBe(true);
+    expect(config.straddleWebhookSecret).toBe(FAKE_SECRET);
+  });
+
+  it("treats a blank webhook secret as absent", () => {
+    const config = loadConfig({
+      env: { STRADDLE_WEBHOOK_SECRET: "   " },
+      envFilePath: false,
+    });
+    expect(config.webhookSecretPresent).toBe(false);
+    expect(config.straddleWebhookSecret).toBeUndefined();
+  });
+
+  it("never leaks the webhook secret through stringify / inspect / enumeration", () => {
+    const config = loadConfig({
+      env: { STRADDLE_WEBHOOK_SECRET: FAKE_SECRET },
+      envFilePath: false,
+    });
+    expect(JSON.stringify(config)).not.toContain(FAKE_SECRET);
+    expect(JSON.stringify(config)).toContain("[REDACTED]");
+    expect(inspect(config)).not.toContain(FAKE_SECRET);
+    expect(Object.keys(config)).not.toContain("straddleWebhookSecret");
+    expect(JSON.stringify({ ...config })).not.toContain(FAKE_SECRET);
+  });
+
+  it("parses WEBHOOK_ALLOW_UNSIGNED truthy values, defaults false otherwise", () => {
+    for (const raw of ["1", "true", "YES", "on"]) {
+      expect(
+        loadConfig({ env: { WEBHOOK_ALLOW_UNSIGNED: raw }, envFilePath: false })
+          .allowUnsignedWebhooks,
+      ).toBe(true);
+    }
+    for (const raw of ["0", "false", "", "nope"]) {
+      expect(
+        loadConfig({ env: { WEBHOOK_ALLOW_UNSIGNED: raw }, envFilePath: false })
+          .allowUnsignedWebhooks,
+      ).toBe(false);
+    }
+  });
+});
+
 describe("loadConfig PORT", () => {
   it("parses a PORT override", () => {
     const config = loadConfig({ env: { PORT: "9090" }, envFilePath: false });
