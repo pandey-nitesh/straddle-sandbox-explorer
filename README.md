@@ -1,6 +1,6 @@
 # straddle-sandbox-explorer
 
-Local Vite + React and Node.js explorer for Straddle's sandbox ACH lifecycle (scenarios A–E): live state transitions, JSONL recordings, and a schema-validated report. See `docs/spec.md` (architecture) and `docs/design.md` (UI). API facts are recorded in `api-notes.md` (M0 exit artifact) — never guessed.
+Local Vite + React and Node.js explorer for Straddle's sandbox ACH lifecycle: live state transitions, JSONL recordings, and a schema-validated report. The demo's stage is the five-scenario suite A–E; P2 adds runnable-when-named scenarios F/G/H/I (closed-account decline/reversal, hold/release, manual cancel), a payout lane, inbound webhook evidence, and resilience hardening. See `docs/spec.md` (architecture), `docs/design.md` (UI), and `docs/plan.md` (the agent-orchestrated build + P2 wave plan). API facts are recorded in `api-notes.md` — never guessed.
 
 ## Setup
 
@@ -29,8 +29,11 @@ Then edit `.env` and set `STRADDLE_API_KEY`. The app also runs without a key: th
 - `npm run dev` — tsx-watch server on `:8787` plus Vite on `:5173` (`/api` proxied to `8787`). Orchestrated by `scripts/dev.ts`, a dependency-free spawner.
 - `npm start` — builds `web/dist` if absent, then serves API + static bundle single-origin on `:8787`.
 - `MOCK_MODE=1 npm start` (or `npm run dev`) — same server wired to the scripted mock Straddle client instead of the live sandbox (no API key needed); the mock replays the M0-measured timings, including Scenario C's contract-shape `paid → reversed`.
-- `npm run scenarios -- --all` — live CLI run for scenarios A–E. Writes `report.json` and one JSONL file per run under `runs/`.
+- `npm run scenarios -- --all` — live CLI run for the required suite A–E. Writes `report.json` and one JSONL file per run under `runs/`.
 - `npm run scenarios -- --mock --scenario c` — mock CLI run for one scenario. Use `--all`, repeat `--scenario`, `--serial`, `--report <path>`, or `--recording-dir <dir>` as needed.
+- `npm run scenarios -- --mock --scenario f` (or `g`/`h`/`i`) — the P2 scenarios run only when named explicitly; they are runnable and reportable but stay out of the required A–E suite and `--all` (spec §5 suite semantics), so the ~15-minute Run All budget is unchanged. F closed-account decline (R02), G closed-account reversal (contract `paid → reversed`; live `failed`+R02), H hold/release (`on_hold → paid`), I manual cancel (`cancelled`).
+- `npm run scenarios -- --payout --mock` — the payout teaching lane: create → observe → report a payout through the same recorder/report machinery (api-notes §12.21). Mock by default; `--payout` alone runs live once configured. Payouts are excluded from the A–E suite.
+- Graceful shutdown: Ctrl-C / SIGTERM during a CLI run writes a **partial** report (unfinished runs stay `partial`, never a fabricated completion) and exits non-zero; the server drains connections with a timeout (P2-R.2).
 - `npm run typecheck` — TypeScript contracts across shared, server, and web.
 - `npm test` — unit/integration suite, including report round-trip, replay, and web bundle guard.
 - `npm run check:secrets` — scans `report.json`, `runs/`, and `web/dist` for the active key and seeded-bank canaries; also verifies `spike/` and `runs/` stay gitignored/untracked.
@@ -51,9 +54,25 @@ The dashboard carries a learning layer for developers new to Straddle (spec §19
 
 ## Replay
 
-The browser replay panel reads `GET /api/recordings`, streams a selected JSONL recording from `GET /api/recordings/:run_id`, validates each line with `RunEventSchema`, and feeds the same reducer used for live events. Playback is fixed at 10x. Partial recordings play to the last valid line and show a `partial` marker.
+The browser replay panel reads `GET /api/recordings`, streams a selected JSONL recording from `GET /api/recordings/:run_id`, validates each line with `RunEventSchema`, and feeds the same reducer used for live events. Playback is a **scrubber** (P2-1.2): play/pause, a seek slider, a speed selector (1×/5×/10×, default 10×), an `event N / total` marker, and a deterministic reset. A persistent `recorded` badge keeps replay visually distinct from a live run. Partial recordings play to the last valid line and show a `partial` marker; seeking rebuilds the store from `events[0..index]` so scrubbing either direction is consistent.
 
 Use `MOCK_MODE=1 npm start` for a replay-only demo without a live key. Mock Scenario C is the contract-shape replay source for `paid → reversed`; live Scenario C records the documented sandbox deviation instead.
+
+## Resilience
+
+The app degrades to diagnostics, never to crashes or silent lies (P2-R):
+
+- **Restart survives (P2-R.1):** the in-memory registry rehydrates from `runs/*.jsonl` at boot, so `/api/runs`, `/api/report`, and the recordings list survive a restart. Historical `seq` (which collides across sessions) is renumbered so a client's cursor keeps advancing; a recording without `run.completed` reloads as `partial`.
+- **Interrupt-safe (P2-R.2):** SIGINT/SIGTERM snapshots a partial report and exits cleanly; the server drains with a timeout.
+- **Fault-tolerant poll/record (P2-R.3):** a transient (retryable-exhausted) sandbox error inside a poll loop is a missed observation — polling continues (emitting `retry.scheduled`) until the hard timeout, so a blip can't kill a long run; a recorder write failure self-heals (recreate the dir + retry) or is logged without crashing.
+- **SSE hardening (P2-R.4):** the stream sends `id:` lines + heartbeats and honors `Last-Event-ID`; the client reconnects with backoff, downgrades to polling only after repeated failures, then upgrades back.
+- **UI isolation + bounded memory (P2-R.5):** a per-pane error boundary keeps one crashing pane from blanking the screen; a stale-data banner appears when polls fail while a run is live; the delivery buffer is bounded and a `resync` flag makes the client re-hydrate rather than silently miss evicted events.
+
+## Webhooks (inbound)
+
+`POST /api/webhooks/straddle` accepts Straddle/Svix webhooks (Standard-Webhooks signing, api-notes §12.22). Signatures are verified (HMAC-SHA256 over `{webhook-id}.{webhook-timestamp}.{rawBody}` with the `whsec_` secret, constant-time compare, ~5-minute skew); payloads are deduped by webhook id, redacted, and stored in a bounded inbox (`GET /api/webhooks`). A webhook that **correlates** to a known run (by `external_id`/resource id) emits one `webhook.received` event into that run's stream, surfaced in the UI's **Webhooks** tab as evidence — polling stays authoritative, so webhooks corroborate rather than drive the lifecycle. Malformed input never crashes the process.
+
+Local testing (no live tunnel available here): set `STRADDLE_WEBHOOK_SECRET=whsec_…` to verify signed deliveries, or `WEBHOOK_ALLOW_UNSIGNED=1` (default off) to accept unsigned payloads (marked unverified) for fixture-driven local runs. Live delivery requires a dashboard-registered endpoint + a public tunnel and is a documented gated follow-up (see Deviations).
 
 ## Verification
 
@@ -102,5 +121,14 @@ Live-sandbox findings from the M0 spike that contradict the original spec assump
 - **No `Retry-After`/`X-RateLimit-*` headers observed** — retries honor `Retry-After` if present but never depend on it.
 - Error envelopes live under a top-level `error` key; validation failures arrive in two shapes (400 PascalCase refs / 422 lowercase refs); resource timestamps vary in precision, so shared schemas validate datetimes leniently.
 - **Wave 2 adapter uses direct `fetch` behind the `StraddleClient` boundary.** M0 selected the SDK, but the runtime adapter currently calls the M0-confirmed endpoints directly so retry timing and `api.exchange` telemetry stay under local control. The SDK remains pinned and isolated as a future swap target.
+
+### P2 findings and adaptations
+
+- **Both seeded accounts are now poisoned; the engine uses a random per-run account (api-notes §12.18).** A settled `failed_closed_bank_account` (R02) blocks new paykey creation on its account just as an R05 dispute does, so both documented seeded accounts now reject new paykeys on this key (one via R05, the other via R02). Because the outcome is forced by `sandbox_outcome` (account-independent), the engine now generates a fresh random 9-digit account per run (routing unchanged), which unblocks the live A–E suite and makes the closed-account scenarios (F/G) repeatable. The account is redacted by field name, so `SEEDED_BANK` remains the canary source of truth.
+- **The `cancel` action verb yields a real `cancelled` status (api-notes §12.19).** No `sandbox_outcome` reaches `cancelled`, but `PUT /v1/charges/{id}/cancel` produces a genuine terminal `cancelled` — the basis of Scenario I, and a truer `cancelled` than Scenario D's watchtower `failed`.
+- **Charge action endpoints have sharp edges (api-notes §12.20).** `hold`/`release`/`cancel` are `PUT /v1/charges/{id}/{action}`: `release` resumes a held charge to `created` (not straight to `paid`); `release` on a non-held charge is a 200 no-op; any action on a terminal charge is a 422; two mutations in quick succession can return a transient, retryable 500 (Scenario H spaces them with a confirming poll to avoid it).
+- **F/G/H/I are runnable but not part of the required suite.** They run only when named (`--scenario f`), so `--all` / the browser Run All / the ~15-minute budget stay A–E; the report's suite gate keys on `REQUIRED_SCENARIO_IDS` (A–E), while F/G/H/I are still reportable. G's live behavior is the same reversal deviation as C (`failed`+R02, no observed `paid`/`reversed`).
+- **Webhooks are Svix / Standard-Webhooks, dashboard-configured (api-notes §12.22).** There is no webhook-management API on the sandbox host; endpoints and `whsec_` signing secrets are created in the dashboard. Charge reversals ride the generic `charge.event.v1`, not a dedicated event. **Adaptation:** the plan sketched four webhook event types (`received`/`verified`/`matched`/`ignored`), but the per-run `RunEvent` requires a `run_id`, so a webhook is a `RunEvent` only once correlated. The implementation uses **one** `webhook.received` event (with `verified`/`resource_id` as fields) for correlated webhooks; uncorrelated or signature-invalid ones stay in the server inbox, not the run stream. **Live delivery is a blocked lane** here — it needs a dashboard-registered endpoint and a public tunnel — so the receiver, signature verification, correlation, and UI are exercised with fixtures/synthetic signed payloads; unsigned live acceptance is never on by default.
+- **Payouts are available but their lifecycle timing is UNMEASURED (api-notes §12.21).** `POST /v1/payouts` returns 201 on this key; the create body omits `config.balance_check`/`consent_type` and the response mirrors a charge. Payouts ship as a mock-first CLI lane (`--payout`); a live payout was never polled to a terminal, so payout timing must not enter any timed budget until measured. The payout run borrows `scenario_id "a"` purely as the event-envelope slot (it runs only via `--payout`, on its own bus, never mixing into an A–E process) so no `shared/` `ScenarioId` change was needed.
 
 *Unofficial developer demo — not affiliated with Straddle Payments Inc.*
