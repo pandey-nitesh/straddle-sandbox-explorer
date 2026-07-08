@@ -21,6 +21,7 @@ import { RunOverview } from "./components/RunOverview";
 import { RunSummary } from "./components/RunSummary";
 import { ScenarioList } from "./components/ScenarioList";
 import { Timeline } from "./components/Timeline";
+import { Toasts } from "./components/Toasts";
 import { WireTabs } from "./components/WireTabs";
 import { useNow } from "./components/useNow";
 import {
@@ -242,71 +243,76 @@ export function Dashboard({ fetchFn }: DashboardProps) {
       : 0);
 
   return (
-    <AppShell
-      onRunAll={onRunAll}
-      keyStatus={keyStatus}
-      offline={offline}
-      // Offline WHILE a suite is live means the panes are frozen on stale
-      // evidence (P2-R.5) — surface it loudly, not just as a header chip.
-      stale={offline && suiteLive}
-      explainEnabled={explain}
-      onToggleExplain={toggleExplain}
-      scenarios={
-        <div className="space-y-4">
-          <ScenarioList
-            items={items}
-            {...(state.selectedScenario !== null
-              ? { selectedId: state.selectedScenario }
-              : {})}
-            onSelect={onSelect}
-            onRun={onRun}
-          />
-          <ReplayPanel
-            fetchFn={fetchFn}
-            store={replayStore}
-            resetToken={replayResetToken}
-            showPreview={false}
-            explain={explain}
-            refreshToken={completedCount}
-          />
-        </div>
-      }
-      lifecycle={
-        run === null || runOverview === undefined ? undefined : (
-          // Keyed by run so open learning notes never leak across scenario
-          // switches or epoch resets (audit finding).
-          <div key={run.runId} className="mx-auto w-full max-w-[460px]">
-            <RunOverview {...runOverview} />
-            <Timeline
-              nodes={timelineNodes}
-              live={run.completed === undefined}
-              {...(evidence !== undefined ? { evidence } : {})}
+    <>
+      <AppShell
+        onRunAll={onRunAll}
+        keyStatus={keyStatus}
+        offline={offline}
+        // Offline WHILE a suite is live means the panes are frozen on stale
+        // evidence (P2-R.5) — surface it loudly, not just as a header chip.
+        stale={offline && suiteLive}
+        explainEnabled={explain}
+        onToggleExplain={toggleExplain}
+        scenarios={
+          <div className="space-y-4">
+            <ScenarioList
+              items={items}
+              {...(state.selectedScenario !== null
+                ? { selectedId: state.selectedScenario }
+                : {})}
+              onSelect={onSelect}
+              onRun={onRun}
+            />
+            <ReplayPanel
+              fetchFn={fetchFn}
+              store={replayStore}
+              resetToken={replayResetToken}
+              showPreview={false}
+              explain={explain}
+              refreshToken={completedCount}
             />
           </div>
-        )
-      }
-      wire={
-        run === null || detailPanel === undefined ? undefined : (
-          <WireTabs
-            details={detailPanel}
-            events={inspectorEntries}
-            consoleEntries={eventConsoleEntries}
-            exchanges={exchanges}
-          />
-        )
-      }
-      summary={
-        summary.covered === 0 ? undefined : (
-          <RunSummary
-            passed={summary.passed}
-            total={summary.total}
-            elapsedMs={elapsedMs}
-            scenarios={assertionRows}
-            onDownloadReport={onDownloadReport}
-          />
-        )
-      }
-    />
+        }
+        lifecycle={
+          run === null || runOverview === undefined ? undefined : (
+            // Keyed by run so open learning notes never leak across scenario
+            // switches or epoch resets (audit finding).
+            <div key={run.runId} className="mx-auto w-full max-w-[460px]">
+              <RunOverview {...runOverview} />
+              <Timeline
+                nodes={timelineNodes}
+                live={run.completed === undefined}
+                {...(evidence !== undefined ? { evidence } : {})}
+              />
+            </div>
+          )
+        }
+        wire={
+          run === null || detailPanel === undefined ? undefined : (
+            <WireTabs
+              details={detailPanel}
+              events={inspectorEntries}
+              consoleEntries={eventConsoleEntries}
+              exchanges={exchanges}
+            />
+          )
+        }
+        summary={
+          summary.covered === 0 ? undefined : (
+            <RunSummary
+              passed={summary.passed}
+              total={summary.total}
+              elapsedMs={elapsedMs}
+              scenarios={assertionRows}
+              onDownloadReport={onDownloadReport}
+            />
+          )
+        }
+      />
+      {/* Offscreen-transition toasts (design §6.5), fed by the LIVE store only —
+          replay uses a separate store instance, so playback never toasts. */}
+      <Toasts store={store} onSelect={onSelect} />
+    </>
   );
 }
 

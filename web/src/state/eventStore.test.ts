@@ -17,6 +17,7 @@ import {
   latestRunForScenario,
   scenarioChip,
   selectedRun,
+  selectToastTransitions,
 } from "./eventStore";
 
 // ---------------------------------------------------------------------------
@@ -570,5 +571,47 @@ describe("hydration", () => {
     store.reset();
     expect(store.getState().runOrder).toEqual([]);
     expect(store.getState().summary.covered).toBe(0);
+  });
+
+  it("bumps hydrationCount only on hydrate, never on incremental events", () => {
+    const store = createEventStore();
+    expect(store.getState().hydrationCount).toBe(0);
+    store.applyEvents([started(1, "run-a", DEF_A), status(2, "run-a", "a", null, "paid")]);
+    expect(store.getState().hydrationCount).toBe(0);
+    store.hydrate(snapshotOf([{ def: DEF_A, events: [started(1, "run-a", DEF_A)] }]));
+    expect(store.getState().hydrationCount).toBe(1);
+    store.hydrate(snapshotOf([{ def: DEF_C, events: [started(1, "run-c", DEF_C)] }]));
+    expect(store.getState().hydrationCount).toBe(2);
+  });
+});
+
+describe("selectToastTransitions (P2-1.3 toasts)", () => {
+  it("yields only notable statuses, keyed by run_id + status + seq", () => {
+    const store = createEventStore();
+    store.applyEvents([
+      started(1, "run-c", DEF_C),
+      status(2, "run-c", "c", null, "created"), // in-flight, excluded
+      status(3, "run-c", "c", "created", "pending"), // in-flight, excluded
+      status(4, "run-c", "c", "pending", "paid"), // notable + provisional
+      status(5, "run-c", "c", "paid", "reversed", { return_code: "R01" }), // notable
+    ]);
+    const transitions = selectToastTransitions(store.getState());
+    expect(transitions.map((t) => t.status)).toEqual(["paid", "reversed"]);
+    expect(transitions.map((t) => t.key)).toEqual([
+      "run-c:paid:4",
+      "run-c:reversed:5",
+    ]);
+    // `paid` in a reversal-expecting run carries the provisional flag.
+    expect(transitions[0]?.provisional).toBe(true);
+    expect(transitions[1]?.provisional).toBe(false);
+  });
+
+  it("does not mark terminal paid provisional outside reversal scenarios", () => {
+    const store = createEventStore();
+    store.applyEvents([started(1, "run-a", DEF_A), status(2, "run-a", "a", null, "paid")]);
+    const transitions = selectToastTransitions(store.getState());
+    expect(transitions).toHaveLength(1);
+    expect(transitions[0]?.status).toBe("paid");
+    expect(transitions[0]?.provisional).toBe(false);
   });
 });
