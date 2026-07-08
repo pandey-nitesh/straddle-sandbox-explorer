@@ -189,6 +189,12 @@ export interface ExplorerState {
   latestByScenario: Partial<Record<ScenarioId, string>>;
   selectedScenario: ScenarioId | null;
   summary: SummaryData;
+  /**
+   * Bumped on every full-snapshot replacement (hydrate) — initial load and
+   * epoch reset (spec §3). Toast derivation watches this to re-baseline on a
+   * (re)hydration instead of announcing every historical transition (P2-1.3).
+   */
+  hydrationCount: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -220,10 +226,12 @@ export function createEventStore(): EventStore {
   const runStates = new Map<string, RunState>();
   const listeners = new Set<() => void>();
   let selected: ScenarioId | null = null;
-  let state: ExplorerState = buildState(runStates, selected);
+  /** Incremented by hydrate() only — a monotonic "full replacement" generation. */
+  let hydrationCount = 0;
+  let state: ExplorerState = buildState(runStates, selected, hydrationCount);
 
   function notify(): void {
-    state = buildState(runStates, selected);
+    state = buildState(runStates, selected, hydrationCount);
     for (const listener of [...listeners]) listener();
   }
 
@@ -270,6 +278,9 @@ export function createEventStore(): EventStore {
 
   function hydrate(snapshot: RegistrySnapshot): void {
     clear();
+    // A full replacement is a new generation: toast consumers re-baseline
+    // against it rather than announcing the rehydrated transitions (P2-1.3).
+    hydrationCount += 1;
     for (const run of snapshot.runs) {
       for (const event of run.events) insert(event);
     }
@@ -324,6 +335,59 @@ export function scenarioChip(state: ExplorerState, id: ScenarioId): ChipStatus {
 export function selectedRun(state: ExplorerState): RunState | null {
   if (state.selectedScenario === null) return null;
   return latestRunForScenario(state, state.selectedScenario);
+}
+
+/** A notable status transition, toast-worthy on an offscreen scenario (§6.5). */
+export interface ToastTransition {
+  /** Stable identity: run_id + status + seq — a re-derivation never re-toasts. */
+  key: string;
+  runId: string;
+  scenarioId: ScenarioId;
+  /** Wire status verbatim (design §4) — e.g. `paid`, `reversed`, `on_hold`. */
+  status: string;
+  /** `paid` in a reversal-expecting run: label is `paid — provisional`. */
+  provisional: boolean;
+  seq: number;
+}
+
+/**
+ * Statuses a viewer cares about even while looking elsewhere (design §6.5):
+ * terminal outcomes plus `on_hold`. In-flight steps (created/scheduled/pending)
+ * are deliberately excluded — they are noise on an unselected scenario.
+ */
+const NOTABLE_TOAST_STATUSES: ReadonlySet<string> = new Set([
+  "paid",
+  "failed",
+  "reversed",
+  "cancelled",
+  "on_hold",
+]);
+
+/**
+ * Notable status transitions across all runs, in seq order (design §6.5 toasts).
+ * Pure over store state; the Toasts component diffs successive results against a
+ * per-hydration baseline so only transitions observed AFTER a (re)hydration
+ * fire — an initial load of existing runs never floods.
+ */
+export function selectToastTransitions(state: ExplorerState): ToastTransition[] {
+  const out: ToastTransition[] = [];
+  for (const runId of state.runOrder) {
+    const run = state.runs[runId];
+    if (run === undefined) continue;
+    for (const node of run.timeline) {
+      if (node.kind !== "status") continue;
+      if (!NOTABLE_TOAST_STATUSES.has(node.status)) continue;
+      out.push({
+        key: `${run.runId}:${node.status}:${node.seq}`,
+        runId: run.runId,
+        scenarioId: run.scenarioId,
+        status: node.status,
+        provisional: node.provisional,
+        seq: node.seq,
+      });
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -622,6 +686,7 @@ function findLast<T>(
 function buildState(
   runStates: ReadonlyMap<string, RunState>,
   selected: ScenarioId | null,
+  hydrationCount: number,
 ): ExplorerState {
   const ordered = [...runStates.values()].sort(
     (a, b) => a.startedSeq - b.startedSeq,
@@ -639,6 +704,7 @@ function buildState(
     latestByScenario,
     selectedScenario: selected,
     summary: buildSummary(runs, latestByScenario),
+    hydrationCount,
   };
 }
 
