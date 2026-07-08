@@ -8,6 +8,7 @@ import { createBus, type EventBus } from "../engine/bus.js";
 import type { RunRegistry } from "../engine/registry.js";
 import { runScenarios, type RunContext } from "../engine/runner.js";
 import { parseScenarioSelection } from "../engine/scenarios.js";
+import { createWebhookCorrelator } from "../engine/webhook-correlator.js";
 import { createMockStraddleClient } from "../straddle/mock.js";
 import { createStraddleClient } from "../straddle/client.js";
 import type { Clock, StraddleClient } from "../straddle/types.js";
@@ -176,8 +177,19 @@ export async function registerRoutes(
   );
 
   // Inbound webhook receiver + inbox (P2-3.2). Encapsulated so its raw-body
-  // content-type parser does not affect the JSON routes above.
-  await registerWebhookRoutes(app, { config: options.config });
+  // content-type parser does not affect the JSON routes above. On ACCEPT the
+  // correlator (P2-3.3) tries to attach the webhook to a run and emit ONE
+  // `webhook.received` — polling stays authoritative; no lifecycle mutation.
+  const correlator = createWebhookCorrelator({
+    bus: options.bus,
+    registry: options.registry,
+  });
+  await registerWebhookRoutes(app, {
+    config: options.config,
+    onAccept: (entry) => {
+      correlator.correlate(entry);
+    },
+  });
 
   app.get<{ Querystring: { since?: string; once?: string } }>(
     "/api/events/stream",

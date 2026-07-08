@@ -253,6 +253,13 @@ export interface RegisterWebhookRoutesOptions {
   maxInboxEntries?: number;
   /** Injectable clock (ms); default Date.now(). */
   now?: () => number;
+  /**
+   * Called once per ACCEPTED (non-duplicate) inbox entry so an accepted webhook
+   * can be correlated to a run (P2-3.3). The receiver stays decoupled: it hands
+   * the redacted entry to this hook and does not know about the bus/registry.
+   * Best-effort — a throw here never fails the delivery response.
+   */
+  onAccept?: (entry: WebhookInboxEntry) => void;
 }
 
 export async function registerWebhookRoutes(
@@ -410,7 +417,7 @@ export async function registerWebhookRoutes(
           return reply.code(200).send({ status: "duplicate", event_id: eventId, verified });
         }
 
-        inbox.record({
+        const accepted = inbox.record({
           event_id: eventId,
           verified,
           received_at: receivedAt,
@@ -419,6 +426,15 @@ export async function registerWebhookRoutes(
           ...(webhookType !== undefined ? { webhook_type: webhookType } : {}),
           ...(resourceId !== undefined ? { resource_id: resourceId } : {}),
         });
+        // Correlate on ACCEPT (P2-3.3). Best-effort side evidence: a failure here
+        // must never turn a successfully-received webhook into an error response.
+        if (options.onAccept !== undefined) {
+          try {
+            options.onAccept(accepted);
+          } catch (error) {
+            request.log.warn({ err_code: (error as { code?: string }).code }, "webhook correlation failed");
+          }
+        }
         return reply.code(200).send({ status: "accepted", event_id: eventId, verified });
       },
     );
