@@ -2,11 +2,10 @@ import {
   useCallback,
   useEffect,
   useMemo,
-  useRef,
   useState,
   useSyncExternalStore,
 } from "react";
-import type { RunEvent } from "@sse/shared";
+import type { RunEvent, RunStartedEvent } from "@sse/shared";
 import {
   getRecordingEvents,
   getRecordings,
@@ -19,13 +18,18 @@ import {
   selectedRun,
 } from "../state/eventStore";
 import {
+  createReplayPlayer,
+  isReplaySpeed,
+  REPLAY_SPEEDS,
+  type ReplaySink,
+  type ReplayTimer,
+} from "../state/replayPlayer";
+import {
   projectExchanges,
   projectTimelineNodes,
 } from "../state/projections";
 import { ExchangeLog } from "./ExchangeLog";
 import { Timeline } from "./Timeline";
-
-const REPLAY_SPEED = 10;
 
 export interface ReplayPanelProps {
   fetchFn?: FetchLike;
@@ -44,6 +48,9 @@ export interface ReplayPanelProps {
   /** Bump to refetch the recordings list (e.g. when a run completes), so
    *  recordings made during the session appear without a page reload. */
   refreshToken?: number;
+  /** Injectable playback timer (default `window`); tests pass a controllable
+   *  one or drive the default with fake timers. */
+  timer?: ReplayTimer;
 }
 
 export function ReplayPanel({
@@ -53,21 +60,38 @@ export function ReplayPanel({
   showPreview = true,
   explain = false,
   refreshToken = 0,
+  timer,
 }: ReplayPanelProps) {
   const [recordings, setRecordings] = useState<RecordingSummary[]>([]);
   const [selected, setSelected] = useState<string>("");
-  const [loaded, setLoaded] = useState<RecordingSummary | null>(null);
-  const [truncated, setTruncated] = useState(false);
+  const [loadedComplete, setLoadedComplete] = useState<boolean | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [ownedStore] = useState(() => createEventStore());
   const store = externalStore ?? ownedStore;
-  const timers = useRef<number[]>([]);
+
+  // The player owns playback state and drives the store through a sink; it
+  // never sees React. `store` is stable for this component's life (Dashboard's
+  // replayStore / the owned store), so capturing it in the initializer is safe.
+  const [player] = useState(() => {
+    const sink: ReplaySink = {
+      render(prefix) {
+        store.reset();
+        if (prefix.length > 0) store.applyEvents(prefix as RunEvent[]);
+        const started = prefix.find(
+          (e): e is RunStartedEvent => e.type === "run.started",
+        );
+        if (started !== undefined) store.selectScenario(started.scenario_id);
+      },
+      clear() {
+        store.reset();
+      },
+    };
+    return createReplayPlayer({ sink, ...(timer !== undefined ? { timer } : {}) });
+  });
+  const playback = useSyncExternalStore(player.subscribe, player.getState);
   const state = useSyncExternalStore(store.subscribe, store.getState);
 
-  const clearReplay = useCallback(() => {
-    for (const timer of timers.current) window.clearTimeout(timer);
-    timers.current = [];
-  }, []);
+  useEffect(() => () => player.dispose(), [player]);
 
   useEffect(() => {
     let cancelled = false;
@@ -75,8 +99,6 @@ export function ReplayPanel({
       .then((items) => {
         if (cancelled) return;
         setRecordings(items);
-        // Keep the user's selection when it still exists; otherwise default
-        // to the first entry.
         setSelected((current) =>
           items.some((item) => item.run_id === current)
             ? current
@@ -91,28 +113,39 @@ export function ReplayPanel({
     };
   }, [fetchFn, refreshToken]);
 
-  useEffect(() => clearReplay, [clearReplay]);
-
+  // Dashboard bumps resetToken when a live run takes the panes: tear the replay
+  // down fully so the live run shows (also runs harmlessly on mount).
   useEffect(() => {
-    clearReplay();
-    store.reset();
-    setLoaded(null);
-    setTruncated(false);
-  }, [clearReplay, resetToken, store]);
+    player.clear();
+    setLoadedComplete(null);
+  }, [player, resetToken]);
 
-  const load = useCallback(async () => {
+  const loadThenPlay = useCallback(async () => {
     const summary = recordings.find((item) => item.run_id === selected);
     if (summary === undefined) return;
     try {
       const recording = await getRecordingEvents(summary.run_id, fetchFn);
       setLoadError(null);
-      setLoaded(summary);
-      setTruncated(recording.truncated);
-      replay(recording.events, store, clearReplay, timers.current);
+      setLoadedComplete(summary.complete);
+      player.load(summary.run_id, recording.events, recording.truncated);
+      player.play();
     } catch {
       setLoadError(`could not load ${summary.run_id}`);
     }
-  }, [clearReplay, fetchFn, recordings, selected, store]);
+  }, [fetchFn, player, recordings, selected]);
+
+  const onToggle = useCallback(() => {
+    if (playback.playing) {
+      player.pause();
+      return;
+    }
+    // Resume the loaded recording, or (re)load a freshly selected one.
+    if (playback.runId === selected && playback.total > 0) player.play();
+    else void loadThenPlay();
+  }, [loadThenPlay, playback.playing, playback.runId, playback.total, player, selected]);
+
+  const isPartial =
+    playback.runId !== null && (loadedComplete === false || playback.truncated);
 
   const run = selectedRun(state);
   const timeline = useMemo(
@@ -128,43 +161,95 @@ export function ReplayPanel({
     <div className="space-y-3 border-t border-edge pt-4">
       <div className="flex items-center gap-2">
         <h3 className="pane-header flex-1">Replay</h3>
-        {loaded !== null && (!loaded.complete || truncated) && (
+        {/* Always-on marker: replay is recorded evidence, never a live run. */}
+        <span className="wire-quote rounded-chip border border-accent px-2 py-0.5 text-xs text-accent">
+          recorded
+        </span>
+        {isPartial && (
           <span className="rounded-chip border border-status-provisional px-2 py-0.5 text-xs text-status-provisional">
             partial
           </span>
         )}
       </div>
-      <div className="flex gap-2">
-        <select
-          aria-label="Recording"
-          value={selected}
-          onChange={(event) => setSelected(event.target.value)}
-          className="wire-quote min-w-0 flex-1 rounded-inset border border-edge bg-surface-inset px-2 py-1 text-xs text-fg"
-        >
-          {recordings.length === 0 ? (
-            <option value="">No recordings</option>
-          ) : (
-            recordings.map((recording) => (
-              <option key={recording.run_id} value={recording.run_id}>
-                {recording.run_id}
-              </option>
-            ))
-          )}
-        </select>
+
+      <select
+        aria-label="Recording"
+        value={selected}
+        onChange={(event) => setSelected(event.target.value)}
+        className="wire-quote w-full min-w-0 rounded-inset border border-edge bg-surface-inset px-2 py-1 text-xs text-fg"
+      >
+        {recordings.length === 0 ? (
+          <option value="">No recordings</option>
+        ) : (
+          recordings.map((recording) => (
+            <option key={recording.run_id} value={recording.run_id}>
+              {recording.run_id}
+            </option>
+          ))
+        )}
+      </select>
+
+      <div className="flex items-center gap-2">
         <button
           type="button"
+          aria-label={playback.playing ? "Pause" : "Play"}
           disabled={selected === ""}
-          onClick={() => void load()}
+          onClick={onToggle}
           className="chip-transition rounded-lg bg-accent px-3 py-1 text-xs font-medium text-white disabled:opacity-50"
         >
-          Play 10x
+          {playback.playing ? "Pause" : "Play"}
         </button>
+        <button
+          type="button"
+          aria-label="Reset replay"
+          disabled={playback.runId === null}
+          onClick={() => player.reset()}
+          className="chip-transition rounded-lg border border-edge px-3 py-1 text-xs font-medium text-fg-muted hover:border-edge-strong disabled:opacity-50"
+        >
+          Reset
+        </button>
+        <select
+          aria-label="Speed"
+          value={playback.speed}
+          onChange={(event) => {
+            const next = Number(event.target.value);
+            if (isReplaySpeed(next)) player.setSpeed(next);
+          }}
+          className="wire-quote rounded-inset border border-edge bg-surface-inset px-2 py-1 text-xs text-fg"
+        >
+          {REPLAY_SPEEDS.map((option) => (
+            <option key={option} value={option}>
+              {option}×
+            </option>
+          ))}
+        </select>
+        <span className="flex-1" />
+        {playback.total > 0 && (
+          <span className="wire-quote shrink-0 text-xs text-fg-muted">
+            {`event ${playback.index} / ${playback.total}`}
+          </span>
+        )}
       </div>
+
+      {playback.total > 0 && (
+        <input
+          type="range"
+          aria-label="Seek"
+          min={0}
+          max={playback.total}
+          step={1}
+          value={playback.index}
+          onChange={(event) => player.seek(Number(event.target.value))}
+          className="w-full accent-accent"
+        />
+      )}
+
       {loadError !== null && (
         <p className="text-xs text-status-fail">
           {loadError} — the recording may have been removed. Pick another.
         </p>
       )}
+
       {showPreview && run !== null && (
         <div className="space-y-3">
           <Timeline nodes={timeline} live={run.completed === undefined} />
@@ -173,35 +258,4 @@ export function ReplayPanel({
       )}
     </div>
   );
-}
-
-function replay(
-  events: RunEvent[],
-  store: ReturnType<typeof createEventStore>,
-  clearReplay: () => void,
-  timers: number[],
-): void {
-  clearReplay();
-  store.reset();
-  if (events.length === 0) return;
-  const first = Date.parse(events[0]?.timestamp ?? "");
-  const apply = (event: RunEvent) => {
-    store.applyEvents([event]);
-    if (event.type === "run.started") store.selectScenario(event.scenario_id);
-  };
-  for (const event of events) {
-    const at = Date.parse(event.timestamp);
-    const delay =
-      Number.isNaN(first) || Number.isNaN(at)
-        ? 0
-        : Math.max(0, (at - first) / REPLAY_SPEED);
-    if (delay === 0) {
-      apply(event);
-      continue;
-    }
-    const timer = window.setTimeout(() => {
-      apply(event);
-    }, delay);
-    timers.push(timer);
-  }
 }

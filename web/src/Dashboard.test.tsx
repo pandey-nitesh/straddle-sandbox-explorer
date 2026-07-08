@@ -384,7 +384,7 @@ describe("Dashboard wiring", () => {
     await renderDashboard(api);
     await screen.findByRole("option", { name: run });
 
-    fireEvent.click(screen.getByRole("button", { name: "Play 10x" }));
+    fireEvent.click(screen.getByRole("button", { name: "Play" }));
 
     await waitFor(() =>
       expect(
