@@ -1,5 +1,6 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
+import { Faker, base, en, en_US } from "@faker-js/faker";
 import {
   SEEDED_BANK,
   type ApiRefusal,
@@ -356,17 +357,46 @@ function isChargeSettled(
 }
 
 function customerInput(scenario: RunnableScenarioDef, runId: string) {
+  const profile = fakeCustomerProfile(scenario.id, runId);
   return {
-    name: `Straddle Sandbox ${scenario.id.toUpperCase()}`,
+    name: profile.name,
     type: "individual" as const,
-    email: `sandbox+${scenario.id}.${runId}@example.com`,
-    phone: "+15555550100",
+    email: profile.email,
+    phone: profile.phone,
     device: { ip_address: "0.0.0.0" },
     config: { sandbox_outcome: scenario.outcomes.customer },
     external_id: runId,
     metadata: { scenario_id: scenario.id },
     idempotencyKey: randomUUID(),
   };
+}
+
+function fakeCustomerProfile(
+  scenarioId: RunnableScenarioId,
+  runId: string,
+): { name: string; email: string; phone: string } {
+  const faker = new Faker({
+    locale: [en_US, en, base],
+    seed: seedFromRun(scenarioId, runId),
+  });
+  const firstName = faker.person.firstName();
+  const lastName = faker.person.lastName();
+  return {
+    name: `${firstName} ${lastName}`,
+    email: faker.internet.email({
+      firstName,
+      lastName,
+      provider: "example.com",
+    }),
+    phone: faker.phone.number({ style: "international" }),
+  };
+}
+
+function seedFromRun(scenarioId: RunnableScenarioId, runId: string): number {
+  return createHash("sha256")
+    .update(`${scenarioId}:${runId}`)
+    .digest()
+    .readUInt32BE(0);
 }
 
 function paykeyInput(

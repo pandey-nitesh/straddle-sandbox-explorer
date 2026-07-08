@@ -40,11 +40,13 @@ const SCENARIO_E: ScenarioDef = {
 interface FakeApi {
   fetchFn: FetchLike;
   push(...events: RunEvent[]): void;
+  record(runId: string, events: RunEvent[]): void;
   postedBodies: unknown[];
 }
 
 function createFakeApi(): FakeApi {
   const events: RunEvent[] = [];
+  const recordings: Record<string, RunEvent[]> = {};
   const postedBodies: unknown[] = [];
 
   const jsonResponse = (body: unknown, status = 200): Response =>
@@ -104,10 +106,37 @@ function createFakeApi(): FakeApi {
     if (url.startsWith("/api/report")) {
       return jsonResponse({ error: "not scripted" }, 500);
     }
+    if (url === "/api/recordings") {
+      return jsonResponse(
+        Object.entries(recordings).map(([run_id, recording]) => ({
+          run_id,
+          path: `runs/${run_id}.jsonl`,
+          complete: recording.some((event) => event.type === "run.completed"),
+        })),
+      );
+    }
+    if (url.startsWith("/api/recordings/")) {
+      const runId = decodeURIComponent(url.slice("/api/recordings/".length));
+      const recording = recordings[runId];
+      if (recording === undefined) return jsonResponse({ error: "not found" }, 404);
+      return ({
+        ok: true,
+        status: 200,
+        text: async () =>
+          `${recording.map((event) => JSON.stringify(event)).join("\n")}\n`,
+      }) as unknown as Response;
+    }
     throw new Error(`unscripted path: ${url}`);
   };
 
-  return { fetchFn, push: (...batch) => events.push(...batch), postedBodies };
+  return {
+    fetchFn,
+    push: (...batch) => events.push(...batch),
+    record: (runId, runEvents) => {
+      recordings[runId] = runEvents;
+    },
+    postedBodies,
+  };
 }
 
 function baseEvent(seq: number, runId: string, scenario: "c" | "e") {
@@ -321,6 +350,67 @@ describe("Dashboard wiring", () => {
       "customer rejected; refusal after create_paykey",
     );
     expect(lifecycle.textContent).toContain(`runs/${run}.jsonl`);
+  });
+
+  it("plays a selected replay into the main lifecycle and wire panes", async () => {
+    const api = createFakeApi();
+    const run = "run-replay-c";
+    api.record(run, [
+      { ...baseEvent(1, run, "c"), type: "run.started", scenario: SCENARIO_C },
+      {
+        ...baseEvent(2, run, "c"),
+        type: "api.exchange",
+        method: "POST",
+        path: "/v1/charges",
+        status: 201,
+        latency_ms: 120,
+        attempt: 1,
+      },
+      {
+        ...baseEvent(3, run, "c"),
+        type: "payment.status_changed",
+        resource_id: "chg_1",
+        from: null,
+        to: "created",
+      },
+      {
+        ...baseEvent(4, run, "c"),
+        type: "payment.status_changed",
+        resource_id: "chg_1",
+        from: "created",
+        to: "paid",
+      },
+    ]);
+    await renderDashboard(api);
+    await screen.findByRole("option", { name: run });
+
+    fireEvent.click(screen.getByRole("button", { name: "Play 10x" }));
+
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole("region", { name: "Lifecycle" })).getByText(run),
+      ).toBeTruthy(),
+    );
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole("region", { name: "Lifecycle" })).queryByText(
+          /No runs yet\. Run scenario C/,
+        ),
+      ).toBeNull(),
+    );
+
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole("region", { name: "Lifecycle" })).getByText(
+          "paid — provisional",
+        ),
+      ).toBeTruthy(),
+    );
+    const wire = screen.getByRole("region", { name: "Wire" });
+    fireEvent.click(within(wire).getByRole("tab", { name: /Exchanges/ }));
+    await waitFor(() =>
+      expect(within(wire).getByText("/v1/charges")).toBeTruthy(),
+    );
   });
 
   it("keeps the lifecycle pane a polite live region and Run all focusable (design §10)", async () => {

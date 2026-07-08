@@ -13,7 +13,8 @@
     "@fontsource/jetbrains-mono": "^5.2.5",
     "@sse/shared": "*",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "react-json-view-lite": "^2.5.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.11",

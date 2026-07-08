@@ -81,22 +81,25 @@ describe("ExchangeLog", () => {
     expect(retry.className).toContain("wire-quote");
   });
 
-  it("expands bodies to inset JSON blocks with muted line numbers and provenance edges", () => {
+  it("expands bodies to collapsible inset JSON trees with provenance edges", () => {
     const { container } = render(<ExchangeLog entries={[ENTRIES[0]!]} />);
     const header = screen.getByRole("button", { expanded: false });
     fireEvent.click(header);
     expect(header.getAttribute("aria-expanded")).toBe("true");
-    // Verbatim bodies.
-    expect(screen.getByText(/"external_id": "run-x"/)).toBeTruthy();
+    // Verbatim bodies, rendered as a navigable JSON tree.
+    expect(container.textContent).toContain('"external_id":');
+    expect(container.textContent).toContain('"run-x"');
     expect(screen.getByText(/"chg_1"/)).toBeTruthy();
+    expect(screen.getAllByRole("tree").length).toBe(2);
+    expect(screen.getAllByRole("button", { name: "Expand all" }).length).toBe(2);
+    expect(
+      screen.getAllByRole("button", { name: "Collapse nested" }).length,
+    ).toBe(2);
     // Teal client edge on the request, purple server edge on the response.
     expect(container.querySelector(".border-l-wire-client")).toBeTruthy();
     expect(container.querySelector(".border-l-wire-server")).toBeTruthy();
-    // Numbered-snippet motif: muted line numbers inside the inset block.
-    const pre = container.querySelector("pre");
-    expect(pre?.className).toContain("bg-surface-inset");
-    expect(pre?.textContent).toContain("1");
-    expect(pre?.querySelector(".text-fg-muted")).toBeTruthy();
+    const block = container.querySelector(".sse-json-tree");
+    expect(block?.parentElement?.className).toContain("bg-surface-inset");
   });
 
   it("shows the empty state when no exchanges exist", () => {

@@ -127,6 +127,82 @@ body {
   animation: spinner-rotate 0.9s linear infinite;
 }
 
+/* Collapsible JSON viewer (react-json-view-lite) skinned into the existing
+   inset wire style. Keep colors semantic and quiet: the JSON is evidence, not
+   decoration. */
+.sse-json-tree {
+  background: transparent;
+  color: var(--text-primary);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.75rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.sse-json-row {
+  margin: 0;
+  padding: 0;
+}
+
+.sse-json-children {
+  margin: 0;
+  padding: 0 0 0 1rem;
+}
+
+.sse-json-label,
+.sse-json-punctuation {
+  color: var(--text-secondary);
+}
+
+.sse-json-label {
+  margin-right: 0.25rem;
+  font-weight: 600;
+}
+
+.sse-json-clickable {
+  cursor: pointer;
+}
+
+.sse-json-string {
+  color: var(--brand-ink);
+}
+
+.sse-json-number,
+.sse-json-boolean {
+  color: var(--wire-server);
+}
+
+.sse-json-null,
+.sse-json-other {
+  color: var(--text-muted);
+}
+
+.sse-json-expander {
+  margin-right: 0.25rem;
+  color: var(--brand-accent);
+  cursor: pointer;
+  user-select: none;
+}
+
+.sse-json-expand::after {
+  content: "▸";
+}
+
+.sse-json-collapse::after {
+  content: "▾";
+}
+
+.sse-json-collapsed {
+  margin-right: 0.25rem;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.sse-json-collapsed::after {
+  content: "...";
+}
+
 /* Reduced motion: entries appear instantly; the pulse becomes a static
    half-filled dot — color+shape+label already carry the state (design §7). */
 @media (prefers-reduced-motion: reduce) {

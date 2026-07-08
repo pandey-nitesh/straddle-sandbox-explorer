@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@faker-js/faker": "^9.9.0",
     "@fastify/static": "^8.2.0",
     "@sse/shared": "*",
     "@straddlecom/straddle": "0.3.0",

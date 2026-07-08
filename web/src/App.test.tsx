@@ -95,8 +95,11 @@ describe("StartupState", () => {
       />,
     );
     expect(screen.queryByText("401 · no response body")).toBeNull();
-    const block = screen.getByText(/"Unauthorized"/);
-    expect(block.textContent).toContain('"status": 401');
+    const tree = screen.getByRole("tree", { name: "JSON tree" });
+    expect(tree.textContent).toContain('"Unauthorized"');
+    expect(tree.textContent).toContain('"status":');
+    expect(tree.textContent).toContain("401");
+    expect(screen.getByRole("button", { name: "Collapse nested" })).toBeTruthy();
   });
 });
 

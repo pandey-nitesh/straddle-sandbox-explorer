@@ -64,6 +64,8 @@ const OFFLINE_AFTER_FAILURES = 2;
 
 export function Dashboard({ fetchFn }: DashboardProps) {
   const [store] = useState(() => createEventStore());
+  const [replayStore] = useState(() => createEventStore());
+  const [replayResetToken, setReplayResetToken] = useState(0);
   const [keyStatus, setKeyStatus] = useState<"ok" | "missing" | "invalid">("ok");
   const [offline, setOffline] = useState(false);
   const pollFailures = useRef(0);
@@ -117,7 +119,15 @@ export function Dashboard({ fetchFn }: DashboardProps) {
   }, [checkHealth]);
 
   const state = useSyncExternalStore(store.subscribe, store.getState);
+  const replayState = useSyncExternalStore(
+    replayStore.subscribe,
+    replayStore.getState,
+  );
   const [explain, toggleExplain] = useExplain();
+
+  const clearReplayView = useCallback(() => {
+    setReplayResetToken((token) => token + 1);
+  }, []);
 
   const startRuns = useCallback(
     async (scenarios: readonly ScenarioId[]) => {
@@ -139,27 +149,32 @@ export function Dashboard({ fetchFn }: DashboardProps) {
   );
 
   const onRunAll = useCallback(() => {
+    clearReplayView();
     // The center pane needs a subject: default to C, the demo's stage.
     if (store.getState().selectedScenario === null) store.selectScenario("c");
     void startRuns(SUITE_SCENARIOS);
-  }, [store, startRuns]);
+  }, [clearReplayView, store, startRuns]);
 
   const onRun = useCallback(
     (id: string) => {
       const scenario = toScenarioId(id);
       if (scenario === null) return;
+      clearReplayView();
       store.selectScenario(scenario);
       void startRuns([scenario]);
     },
-    [store, startRuns],
+    [clearReplayView, store, startRuns],
   );
 
   const onSelect = useCallback(
     (id: string) => {
       const scenario = toScenarioId(id);
-      if (scenario !== null) store.selectScenario(scenario);
+      if (scenario !== null) {
+        clearReplayView();
+        store.selectScenario(scenario);
+      }
     },
-    [store],
+    [clearReplayView, store],
   );
 
   const onDownloadReport = useCallback(() => {
@@ -178,7 +193,9 @@ export function Dashboard({ fetchFn }: DashboardProps) {
     () => projectScenarioItems(state, { explain }),
     [state, explain],
   );
-  const run = selectedRun(state);
+  const liveRun = selectedRun(state);
+  const replayRun = selectedRun(replayState);
+  const run = replayRun ?? liveRun;
   const timelineNodes = useMemo(
     () => (run === null ? [] : projectTimelineNodes(run, { explain })),
     [run, explain],
@@ -243,6 +260,9 @@ export function Dashboard({ fetchFn }: DashboardProps) {
           />
           <ReplayPanel
             fetchFn={fetchFn}
+            store={replayStore}
+            resetToken={replayResetToken}
+            showPreview={false}
             explain={explain}
             refreshToken={completedCount}
           />

@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { JsonBlock } from "./JsonBlock";
 import { Wordmark } from "./Wordmark";
 
 /**
@@ -88,9 +89,7 @@ export function StartupState(props: StartupStateProps) {
           401 · no response body
         </p>
       ) : (
-        <pre className="wire-quote mt-3 overflow-x-auto rounded-inset bg-surface-inset p-3 text-xs leading-[1.6] text-fg">
-          {JSON.stringify(props.errorBody, null, 2)}
-        </pre>
+        <JsonBlock value={props.errorBody} className="mt-3" />
       )}
       <p className="mt-3 text-sm text-fg-secondary">
         Regenerate the key in{" "}

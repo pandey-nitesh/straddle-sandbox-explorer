@@ -64,6 +64,27 @@ describe("runner", () => {
       http_status: 422,
     });
     expect(events.some((e) => e.type === "run.completed" && e.result === "failed")).toBe(false);
+    const customerCreates = events.filter(
+      (event) =>
+        event.type === "api.exchange" &&
+        event.method === "POST" &&
+        event.path === "/v1/customers",
+    );
+    expect(customerCreates).toHaveLength(5);
+    const names = customerCreates.map((event) => {
+      const body =
+        event.type === "api.exchange" &&
+        typeof event.request_body === "object" &&
+        event.request_body !== null
+          ? (event.request_body as { name?: unknown; email?: unknown; phone?: unknown })
+          : {};
+      expect(body.name).toEqual(expect.any(String));
+      expect(body.name).not.toMatch(/^Straddle Sandbox/);
+      expect(body.email).toEqual(expect.stringMatching(/@example\.com$/));
+      expect(body.phone).toEqual(expect.stringMatching(/^\+\d{10,15}$/));
+      return body.name;
+    });
+    expect(new Set(names).size).toBe(names.length);
   });
 });
 

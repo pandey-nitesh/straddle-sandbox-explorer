@@ -15,6 +15,7 @@ import {
 } from "../api";
 import {
   createEventStore,
+  type EventStore,
   selectedRun,
 } from "../state/eventStore";
 import {
@@ -28,6 +29,15 @@ const REPLAY_SPEED = 10;
 
 export interface ReplayPanelProps {
   fetchFn?: FetchLike;
+  /** Optional shared replay store. Dashboard passes one so playback renders
+   *  in the main Lifecycle/Wire panes; standalone tests/components can keep
+   *  the local preview store. */
+  store?: EventStore;
+  /** Bump to cancel an in-flight replay and clear the shared replay state. */
+  resetToken?: number;
+  /** The dashboard renders replay in the main panes, so it hides this local
+   *  preview there while keeping the component useful standalone. */
+  showPreview?: boolean;
   /** Learning-layer toggle — threaded from the header so replay annotates
    *  exactly like live runs (spec §19). */
   explain?: boolean;
@@ -36,13 +46,21 @@ export interface ReplayPanelProps {
   refreshToken?: number;
 }
 
-export function ReplayPanel({ fetchFn, explain = false, refreshToken = 0 }: ReplayPanelProps) {
+export function ReplayPanel({
+  fetchFn,
+  store: externalStore,
+  resetToken = 0,
+  showPreview = true,
+  explain = false,
+  refreshToken = 0,
+}: ReplayPanelProps) {
   const [recordings, setRecordings] = useState<RecordingSummary[]>([]);
   const [selected, setSelected] = useState<string>("");
   const [loaded, setLoaded] = useState<RecordingSummary | null>(null);
   const [truncated, setTruncated] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [store] = useState(() => createEventStore());
+  const [ownedStore] = useState(() => createEventStore());
+  const store = externalStore ?? ownedStore;
   const timers = useRef<number[]>([]);
   const state = useSyncExternalStore(store.subscribe, store.getState);
 
@@ -74,6 +92,13 @@ export function ReplayPanel({ fetchFn, explain = false, refreshToken = 0 }: Repl
   }, [fetchFn, refreshToken]);
 
   useEffect(() => clearReplay, [clearReplay]);
+
+  useEffect(() => {
+    clearReplay();
+    store.reset();
+    setLoaded(null);
+    setTruncated(false);
+  }, [clearReplay, resetToken, store]);
 
   const load = useCallback(async () => {
     const summary = recordings.find((item) => item.run_id === selected);
@@ -140,7 +165,7 @@ export function ReplayPanel({ fetchFn, explain = false, refreshToken = 0 }: Repl
           {loadError} — the recording may have been removed. Pick another.
         </p>
       )}
-      {run !== null && (
+      {showPreview && run !== null && (
         <div className="space-y-3">
           <Timeline nodes={timeline} live={run.completed === undefined} />
           {exchanges.length > 0 && <ExchangeLog entries={exchanges} />}
@@ -160,15 +185,22 @@ function replay(
   store.reset();
   if (events.length === 0) return;
   const first = Date.parse(events[0]?.timestamp ?? "");
+  const apply = (event: RunEvent) => {
+    store.applyEvents([event]);
+    if (event.type === "run.started") store.selectScenario(event.scenario_id);
+  };
   for (const event of events) {
     const at = Date.parse(event.timestamp);
     const delay =
       Number.isNaN(first) || Number.isNaN(at)
         ? 0
         : Math.max(0, (at - first) / REPLAY_SPEED);
+    if (delay === 0) {
+      apply(event);
+      continue;
+    }
     const timer = window.setTimeout(() => {
-      store.applyEvents([event]);
-      if (event.type === "run.started") store.selectScenario(event.scenario_id);
+      apply(event);
     }, delay);
     timers.push(timer);
   }
