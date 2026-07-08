@@ -12,7 +12,12 @@ export interface AppShellProps {
   wire?: ReactNode;
   summary?: ReactNode;
   keyStatus?: "ok" | "missing" | "invalid";
+  /** Consecutive poll cycles failed — the server is unreachable. */
+  offline?: boolean;
   onRunAll?: () => void;
+  /** Learning-layer toggle (design §6.6); the button renders only when wired. */
+  explainEnabled?: boolean;
+  onToggleExplain?: () => void;
 }
 
 export function PrimaryButton({
@@ -77,7 +82,33 @@ export function AppShell(props: AppShellProps) {
         >
           key {keyStatus}
         </span>
+        {props.offline === true && (
+          <span
+            data-testid="offline-chip"
+            className="wire-quote rounded-chip border border-status-fail bg-status-fail/10 px-2 py-0.5 text-xs text-status-fail"
+          >
+            server unreachable
+          </span>
+        )}
         <span className="flex-1" />
+        {props.onToggleExplain !== undefined && (
+          <button
+            type="button"
+            aria-pressed={props.explainEnabled === true}
+            title="Explanations for statuses, return codes, outcomes, and API calls — click any underlined term"
+            onClick={props.onToggleExplain}
+            className={`chip-transition rounded-lg border px-3 py-1 text-sm font-medium ${
+              props.explainEnabled === true
+                ? "border-accent bg-accent/10 text-accent-strong"
+                : "border-edge text-fg-muted hover:border-edge-strong"
+            }`}
+          >
+            Explain{" "}
+            <span className="wire-quote text-xs">
+              {props.explainEnabled === true ? "on" : "off"}
+            </span>
+          </button>
+        )}
         <PrimaryButton onClick={props.onRunAll}>Run all</PrimaryButton>
       </header>
 
@@ -87,10 +118,20 @@ export function AppShell(props: AppShellProps) {
         </Pane>
         <Pane title="Lifecycle" live>
           {props.lifecycle ?? (
-            <Placeholder>
-              No runs yet. Run scenario C to watch a payment settle and then
-              un-settle.
-            </Placeholder>
+            <div className="space-y-2">
+              <Placeholder>
+                No runs yet. Run scenario C to watch a payment settle and then
+                un-settle.
+              </Placeholder>
+              {props.explainEnabled === true && (
+                <Placeholder>
+                  Explain is on: click any dotted-underlined term — like a
+                  scenario&apos;s{" "}
+                  <span className="wire-quote">sandbox_outcome</span> — to
+                  learn what it does.
+                </Placeholder>
+              )}
+            </div>
           )}
         </Pane>
         <Pane title="Wire">

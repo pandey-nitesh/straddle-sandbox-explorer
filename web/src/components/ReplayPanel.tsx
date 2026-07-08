@@ -26,10 +26,22 @@ import { Timeline } from "./Timeline";
 
 const REPLAY_SPEED = 10;
 
-export function ReplayPanel({ fetchFn }: { fetchFn?: FetchLike }) {
+export interface ReplayPanelProps {
+  fetchFn?: FetchLike;
+  /** Learning-layer toggle — threaded from the header so replay annotates
+   *  exactly like live runs (spec §19). */
+  explain?: boolean;
+  /** Bump to refetch the recordings list (e.g. when a run completes), so
+   *  recordings made during the session appear without a page reload. */
+  refreshToken?: number;
+}
+
+export function ReplayPanel({ fetchFn, explain = false, refreshToken = 0 }: ReplayPanelProps) {
   const [recordings, setRecordings] = useState<RecordingSummary[]>([]);
   const [selected, setSelected] = useState<string>("");
   const [loaded, setLoaded] = useState<RecordingSummary | null>(null);
+  const [truncated, setTruncated] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [store] = useState(() => createEventStore());
   const timers = useRef<number[]>([]);
   const state = useSyncExternalStore(store.subscribe, store.getState);
@@ -45,7 +57,13 @@ export function ReplayPanel({ fetchFn }: { fetchFn?: FetchLike }) {
       .then((items) => {
         if (cancelled) return;
         setRecordings(items);
-        if (items[0] !== undefined) setSelected(items[0].run_id);
+        // Keep the user's selection when it still exists; otherwise default
+        // to the first entry.
+        setSelected((current) =>
+          items.some((item) => item.run_id === current)
+            ? current
+            : (items[0]?.run_id ?? ""),
+        );
       })
       .catch(() => {
         if (!cancelled) setRecordings([]);
@@ -53,33 +71,39 @@ export function ReplayPanel({ fetchFn }: { fetchFn?: FetchLike }) {
     return () => {
       cancelled = true;
     };
-  }, [fetchFn]);
+  }, [fetchFn, refreshToken]);
 
   useEffect(() => clearReplay, [clearReplay]);
 
   const load = useCallback(async () => {
     const summary = recordings.find((item) => item.run_id === selected);
     if (summary === undefined) return;
-    const events = await getRecordingEvents(summary.run_id, fetchFn);
-    setLoaded(summary);
-    replay(events, store, clearReplay, timers.current);
+    try {
+      const recording = await getRecordingEvents(summary.run_id, fetchFn);
+      setLoadError(null);
+      setLoaded(summary);
+      setTruncated(recording.truncated);
+      replay(recording.events, store, clearReplay, timers.current);
+    } catch {
+      setLoadError(`could not load ${summary.run_id}`);
+    }
   }, [clearReplay, fetchFn, recordings, selected, store]);
 
   const run = selectedRun(state);
   const timeline = useMemo(
-    () => (run === null ? [] : projectTimelineNodes(run)),
-    [run],
+    () => (run === null ? [] : projectTimelineNodes(run, { explain })),
+    [run, explain],
   );
   const exchanges = useMemo(
-    () => (run === null ? [] : projectExchanges(run)),
-    [run],
+    () => (run === null ? [] : projectExchanges(run, { explain })),
+    [run, explain],
   );
 
   return (
     <div className="space-y-3 border-t border-edge pt-4">
       <div className="flex items-center gap-2">
         <h3 className="pane-header flex-1">Replay</h3>
-        {loaded !== null && !loaded.complete && (
+        {loaded !== null && (!loaded.complete || truncated) && (
           <span className="rounded-chip border border-status-provisional px-2 py-0.5 text-xs text-status-provisional">
             partial
           </span>
@@ -111,6 +135,11 @@ export function ReplayPanel({ fetchFn }: { fetchFn?: FetchLike }) {
           Play 10x
         </button>
       </div>
+      {loadError !== null && (
+        <p className="text-xs text-status-fail">
+          {loadError} — the recording may have been removed. Pick another.
+        </p>
+      )}
       {run !== null && (
         <div className="space-y-3">
           <Timeline nodes={timeline} live={run.completed === undefined} />

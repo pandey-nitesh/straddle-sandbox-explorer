@@ -159,17 +159,31 @@ export function getRecordings(
   return requestJson<RecordingSummary[]>(fetchFn, "/api/recordings");
 }
 
+export interface RecordingEvents {
+  events: RunEvent[];
+  /** True when an invalid line cut the recording short — the valid prefix
+   *  above it still plays (spec §11: partial files are valid prefixes). */
+  truncated: boolean;
+}
+
 export async function getRecordingEvents(
   runId: string,
   fetchFn: FetchLike = boundFetch,
-): Promise<RunEvent[]> {
+): Promise<RecordingEvents> {
   const response = await fetchFn(`/api/recordings/${encodeURIComponent(runId)}`);
   const text = await response.text();
   if (!response.ok) throw new ApiError(`/api/recordings/${runId}`, response.status, text);
-  return text
-    .split(/\r?\n/)
-    .filter((line) => line.trim() !== "")
-    .map((line) => RunEventSchema.parse(JSON.parse(line)));
+  const lines = text.split(/\r?\n/).filter((line) => line.trim() !== "");
+  const events: RunEvent[] = [];
+  for (const line of lines) {
+    try {
+      events.push(RunEventSchema.parse(JSON.parse(line)));
+    } catch {
+      // First bad line ends the valid prefix; everything after is suspect.
+      return { events, truncated: true };
+    }
+  }
+  return { events, truncated: false };
 }
 
 // ---------------------------------------------------------------------------

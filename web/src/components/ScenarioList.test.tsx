@@ -69,13 +69,11 @@ describe("ScenarioList", () => {
 
   it("marks the selected row with the accent left edge", () => {
     render(<ScenarioList items={ITEMS} selectedId="c" />);
-    const rows = screen.getAllByRole("option");
-    const selected = rows.find((r) => r.getAttribute("aria-selected") === "true");
+    const rows = screen.getAllByRole("listitem");
+    const selected = rows.find((r) => r.getAttribute("aria-current") === "true");
     expect(selected?.className).toContain("border-l-accent");
     expect(selected?.className).toContain("border-edge-strong");
-    const unselected = rows.find(
-      (r) => r.getAttribute("aria-selected") === "false",
-    );
+    const unselected = rows.find((r) => r.getAttribute("aria-current") === null);
     expect(unselected?.className).toContain("border-l-transparent");
   });
 
@@ -88,6 +86,16 @@ describe("ScenarioList", () => {
     fireEvent.click(screen.getByRole("button", { name: "Run scenario C" }));
     expect(onRun).toHaveBeenCalledWith("c");
     expect(onSelect).toHaveBeenCalledTimes(1); // stopPropagation held
+  });
+
+  it("Enter on an inner button never selects the row (keyboard guard)", () => {
+    const onSelect = vi.fn();
+    render(<ScenarioList items={ITEMS} onSelect={onSelect} />);
+    const runButton = screen.getByRole("button", { name: "Run scenario C" });
+    // Bubbled Enter from a focused inner button must not be hijacked by the
+    // row handler — the button keeps its native activation (audit finding).
+    fireEvent.keyDown(runButton, { key: "Enter" });
+    expect(onSelect).not.toHaveBeenCalled();
   });
 
   it("running rows swap the Run button for a live elapsed mono timer", () => {
@@ -104,10 +112,10 @@ describe("ScenarioList", () => {
   it("is arrow-key navigable (design §10)", () => {
     const onSelect = vi.fn();
     render(<ScenarioList items={ITEMS} selectedId="a" onSelect={onSelect} />);
-    const listbox = screen.getByRole("listbox", { name: "Scenarios" });
-    const rows = screen.getAllByRole("option");
+    const list = screen.getByRole("list", { name: "Scenarios" });
+    const rows = screen.getAllByRole("listitem");
     rows[0]!.focus();
-    fireEvent.keyDown(listbox, { key: "ArrowDown" });
+    fireEvent.keyDown(list, { key: "ArrowDown" });
     expect(onSelect).toHaveBeenCalledWith("c");
     expect(document.activeElement).toBe(rows[1]);
   });

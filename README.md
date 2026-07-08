@@ -45,6 +45,10 @@ Then edit `.env` and set `STRADDLE_API_KEY`. The app also runs without a key: th
 
 All of the above are gitignored. Recordings and reports can be safely regenerated.
 
+## Learning the API
+
+The dashboard carries a learning layer for developers new to Straddle (spec §19, design §6.6). With the header **Explain** toggle on (the default), dotted-underlined wire terms are clickable: terminal lifecycle statuses, ACH return-code chips, `sandbox_outcome` lines, and the identity/paykey detail rows expand into short prose notes. Each expanded wire exchange opens with a one-line explanation of what the call does plus a "Fields to notice" block for the notable fields actually present (`config.balance_check`, `external_id`, `meta.api_request_id`, the `Idempotency-Key` header, …). Where the sandbox contradicts Straddle's docs — live scenario C/D terminals and the mock's provisional `paid` node — an always-visible "sandbox deviation" callout explains what production would do differently. Every note is hand-curated from `api-notes.md` (or spec §18 for the live-gate findings) and cites its section; the content lives in `web/src/knowledge/`, web-only by design, and replay annotates exactly like live. Toggling Explain off restores the demo-clean screen exactly.
+
 ## Replay
 
 The browser replay panel reads `GET /api/recordings`, streams a selected JSONL recording from `GET /api/recordings/:run_id`, validates each line with `RunEventSchema`, and feeds the same reducer used for live events. Playback is fixed at 10x. Partial recordings play to the last valid line and show a `partial` marker.

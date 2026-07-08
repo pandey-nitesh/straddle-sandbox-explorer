@@ -32,6 +32,65 @@ import {
   type RunState,
   type TimelineStatusNode,
 } from "./eventStore";
+import type { NoteContent } from "../components/Note";
+import type {
+  DeviationNote,
+  KnowledgeEntry,
+  OutcomeEntry,
+} from "../knowledge";
+import {
+  endpointNote,
+  fieldNotesFor,
+  outcomeNote,
+  returnCodeNote,
+  statusNote,
+  timelineDeviationsFor,
+} from "../knowledge";
+
+/**
+ * Learning-layer switch (design §6.6): projections attach knowledge notes to
+ * view models only while Explain is on, so components stay note-agnostic and
+ * Explain-off is provably the pre-learning screen.
+ */
+export interface ProjectionOptions {
+  explain?: boolean;
+}
+
+function toNote(entry: KnowledgeEntry | undefined): NoteContent | undefined {
+  if (entry === undefined) return undefined;
+  return {
+    term: entry.term,
+    short: entry.short,
+    ...(entry.detail !== undefined ? { detail: entry.detail } : {}),
+    source: entry.source,
+  };
+}
+
+/** Deviation → always-visible timeline callout content (design §6.6). */
+function toCallout(dev: DeviationNote): NoteContent {
+  return { short: dev.headline, detail: dev.detail, source: dev.source };
+}
+
+/** The outcome shown for a run/row is charge ?? customer ?? paykey (E shows
+ *  the customer outcome) — the note lookup must use the same resource. */
+function outcomeNoteFor(outcomes: {
+  customer?: string | undefined;
+  paykey?: string | undefined;
+  charge?: string | undefined;
+}): NoteContent | undefined {
+  const resource: OutcomeEntry["resource"] | null =
+    outcomes.charge !== undefined
+      ? "charge"
+      : outcomes.customer !== undefined
+        ? "customer"
+        : outcomes.paykey !== undefined
+          ? "paykey"
+          : null;
+  if (resource === null) return undefined;
+  const outcome =
+    outcomes.charge ?? outcomes.customer ?? outcomes.paykey ?? "";
+  return toNote(outcomeNote(resource, outcome));
+}
 
 /**
  * Pure projections from the event store's derived state onto the components'
@@ -59,6 +118,8 @@ export interface ScenarioCopy {
   purpose: string;
   /** Forced sandbox outcome shown in mono (charge outcome; customer for E). */
   outcome: string;
+  /** Which resource `outcome` forces — keys the learning note lookup. */
+  outcomeResource: "charge" | "customer";
 }
 
 export const SCENARIO_COPY: readonly ScenarioCopy[] = [
@@ -68,6 +129,7 @@ export const SCENARIO_COPY: readonly ScenarioCopy[] = [
     name: "Happy path",
     purpose: "Verified customer, active paykey, paid charge.",
     outcome: "paid",
+    outcomeResource: "charge",
   },
   {
     id: "b",
@@ -75,6 +137,7 @@ export const SCENARIO_COPY: readonly ScenarioCopy[] = [
     name: "Insufficient funds",
     purpose: "Verified customer with an R01 bank-decline failure.",
     outcome: "failed_insufficient_funds",
+    outcomeResource: "charge",
   },
   {
     id: "c",
@@ -82,6 +145,7 @@ export const SCENARIO_COPY: readonly ScenarioCopy[] = [
     name: "Reversal",
     purpose: "Mock/replay reversal evidence: paid before reversed.",
     outcome: "reversed_insufficient_funds",
+    outcomeResource: "charge",
   },
   {
     id: "d",
@@ -89,6 +153,7 @@ export const SCENARIO_COPY: readonly ScenarioCopy[] = [
     name: "Risk cancellation",
     purpose: "Charge cancelled with structured reason detail.",
     outcome: "cancelled_for_fraud_risk",
+    outcomeResource: "charge",
   },
   {
     id: "e",
@@ -96,6 +161,7 @@ export const SCENARIO_COPY: readonly ScenarioCopy[] = [
     name: "Rejected identity",
     purpose: "Rejected customer blocks downstream paykey creation.",
     outcome: "rejected",
+    outcomeResource: "customer",
   },
 ];
 
@@ -117,28 +183,38 @@ function outcomeOf(run: RunState): string | undefined {
 // Left pane
 // ---------------------------------------------------------------------------
 
-export function projectScenarioItems(state: ExplorerState): ScenarioListItem[] {
+export function projectScenarioItems(
+  state: ExplorerState,
+  opts: ProjectionOptions = {},
+): ScenarioListItem[] {
+  const explain = opts.explain ?? false;
   return SCENARIO_COPY.map((copy) => {
     const run = latestRunForScenario(state, copy.id);
     if (run === null) {
+      const note = explain
+        ? toNote(outcomeNote(copy.outcomeResource, copy.outcome))
+        : undefined;
       return {
         id: copy.id,
         letter: copy.letter,
         name: copy.name,
         purpose: copy.purpose,
         outcome: copy.outcome,
+        ...(note !== undefined ? { outcomeNote: note } : {}),
         chip: "idle" as const,
       };
     }
     const { letter, name } = splitLabel(run.scenario.label);
     const outcome = outcomeOf(run) ?? copy.outcome;
     const startedMs = Date.parse(run.startedAt);
+    const note = explain ? outcomeNoteFor(run.scenario.outcomes) : undefined;
     return {
       id: copy.id,
       letter,
       name,
       purpose: run.scenario.purpose,
       outcome,
+      ...(note !== undefined ? { outcomeNote: note } : {}),
       chip: run.chip,
       ...(run.completed === undefined && !Number.isNaN(startedMs)
         ? { runningSinceEpochMs: startedMs }
@@ -164,10 +240,26 @@ function nodeKind(node: TimelineStatusNode): TimelineNodeKind {
  * refusal timeline entries are not charge transitions — the review feeds the
  * P1 identity panel and Scenario E's evidence card instead.
  */
-export function projectTimelineNodes(run: RunState): TimelineViewNode[] {
+/** Terminal node kinds get status notes (design §6.6 sparse policy: the
+ *  Lifecycle pane annotates the state machine's endpoints, nothing else). */
+const TERMINAL_NODE_KINDS: readonly TimelineNodeKind[] = [
+  "paid",
+  "failed",
+  "cancelled",
+];
+
+export function projectTimelineNodes(
+  run: RunState,
+  opts: ProjectionOptions = {},
+): TimelineViewNode[] {
+  const explain = opts.explain ?? false;
+  const deviations = explain
+    ? timelineDeviationsFor(run.scenario)
+    : ({} as ReturnType<typeof timelineDeviationsFor>);
   const statusNodes = run.timeline.filter(
     (node): node is TimelineStatusNode => node.kind === "status",
   );
+  const lastIndex = statusNodes.length - 1;
   return statusNodes.map((node, i) => {
     // Elapsed-since-previous VISIBLE node (design §6.2): recomputed here
     // between status nodes, because the store's elapsedMs is relative to the
@@ -180,25 +272,56 @@ export function projectTimelineNodes(run: RunState): TimelineViewNode[] {
       Number.isNaN(at) || Number.isNaN(previousAt)
         ? undefined
         : Math.max(0, at - previousAt);
+    const kind = nodeKind(node);
+    const note =
+      explain && TERMINAL_NODE_KINDS.includes(kind)
+        ? toNote(statusNote(node.status))
+        : undefined;
+    const codeNote =
+      explain && node.returnCode !== undefined
+        ? toNote(returnCodeNote(node.returnCode))
+        : undefined;
+    // Deviation callouts (design §6.6): the live C/D terminal explains what
+    // this failure means in production; contract C's provisional paid node
+    // explains that the live sandbox cannot show this sequence.
+    const deviation =
+      kind === "provisional" && deviations.provisional !== undefined
+        ? toCallout(deviations.provisional)
+        : i === lastIndex &&
+            TERMINAL_NODE_KINDS.includes(kind) &&
+            deviations.terminal !== undefined
+          ? toCallout(deviations.terminal)
+          : undefined;
     return {
       id: String(node.seq),
-      kind: nodeKind(node),
+      kind,
       status: node.status,
       at: node.at,
       ...(elapsedMs !== undefined ? { elapsedMs } : {}),
       ...(node.returnCode !== undefined ? { returnCode: node.returnCode } : {}),
       ...(node.reason !== undefined ? { reason: node.reason } : {}),
+      ...(note !== undefined ? { statusNote: note } : {}),
+      ...(codeNote !== undefined ? { codeNote } : {}),
+      ...(deviation !== undefined ? { deviation } : {}),
     };
   });
 }
 
-export function projectRunOverview(run: RunState): RunOverviewProps {
+export function projectRunOverview(
+  run: RunState,
+  opts: ProjectionOptions = {},
+): RunOverviewProps {
+  const explain = opts.explain ?? false;
+  const outcomeRowNote = explain
+    ? outcomeNoteFor(run.scenario.outcomes)
+    : undefined;
   const rows: RunOverviewRow[] = [
     { label: "Run", value: run.runId, mono: true },
     {
       label: "Outcome",
       value: outcomeOf(run) ?? "n/a",
       mono: true,
+      ...(outcomeRowNote !== undefined ? { note: outcomeRowNote } : {}),
     },
     {
       label: "Started",
@@ -355,13 +478,28 @@ export function projectAssertionRows(state: ExplorerState): ScenarioAssertions[]
  * latency; earlier retries appear as indented `attempt N · backoff` sub-lines
  * (design §6.3 — retries visible per acceptance criterion 7).
  */
-export function projectExchanges(run: RunState): ExchangeLogEntry[] {
+export function projectExchanges(
+  run: RunState,
+  opts: ProjectionOptions = {},
+): ExchangeLogEntry[] {
+  const explain = opts.explain ?? false;
   return run.exchanges.flatMap((exchange) => {
     const final = exchange.attempts[exchange.attempts.length - 1];
     if (final === undefined) return [];
     const retries = exchange.attempts
       .filter((a) => a.attempt >= 2)
       .map((a) => ({ attempt: a.attempt, backoffMs: a.backoffMs ?? 0 }));
+    const note = explain
+      ? endpointNote(exchange.method, exchange.path)?.short
+      : undefined;
+    const fieldNotes = explain
+      ? fieldNotesFor(
+          exchange.method,
+          exchange.path,
+          final.requestBody,
+          final.responseBody,
+        )
+      : [];
     return [
       {
         id: String(exchange.seq),
@@ -369,6 +507,8 @@ export function projectExchanges(run: RunState): ExchangeLogEntry[] {
         path: exchange.path,
         status: final.status,
         latencyMs: final.latencyMs,
+        ...(note !== undefined ? { endpointNote: note } : {}),
+        ...(fieldNotes.length > 0 ? { fieldNotes } : {}),
         ...(final.requestBody !== undefined
           ? { requestBody: final.requestBody }
           : {}),
@@ -385,18 +525,48 @@ export function projectExchanges(run: RunState): ExchangeLogEntry[] {
 // P1 right-pane details
 // ---------------------------------------------------------------------------
 
-export function projectDetailPanel(run: RunState): DetailPanelProps {
+/** Detail-panel quirk notes (design §6.6 sparse policy: the three identity /
+ *  paykey facts a newcomer would otherwise get wrong). */
+const IDENTITY_STATUS_NOTE: NoteContent = {
+  short:
+    "The customer's status field is the authoritative verification result.",
+  detail:
+    'The review payload\'s identity_details.decision is canned synthetic data — it reads "accept" even for rejected customers.',
+  source: "api-notes §6",
+};
+const IDENTITY_SCORES_NOTE: NoteContent = {
+  short: "Scores nest per module — no flat top-level score exists.",
+  detail:
+    "Risk maps from identity_details.breakdown.fraud.risk_score and correlation from breakdown.email.correlation_score, with documented fallbacks.",
+  source: "api-notes §6",
+};
+const PAYKEY_ID_NOTE: NoteContent = {
+  short:
+    "Charges reference the paykey token, not this id — and the token is credential-class, raw only in the bridge create response.",
+  source: "api-notes §7",
+};
+
+export function projectDetailPanel(
+  run: RunState,
+  opts: ProjectionOptions = {},
+): DetailPanelProps {
+  const explain = opts.explain ?? false;
   const identityRows: DetailRow[] = [];
   if (run.review !== undefined) {
     identityRows.push(
       { label: "Customer", value: run.review.customerId },
-      { label: "Status", value: run.review.status },
+      {
+        label: "Status",
+        value: run.review.status,
+        ...(explain ? { note: IDENTITY_STATUS_NOTE } : {}),
+      },
       {
         label: "Risk",
         value:
           run.review.summary.risk_score === undefined
             ? "n/a"
             : run.review.summary.risk_score.toFixed(3),
+        ...(explain ? { note: IDENTITY_SCORES_NOTE } : {}),
       },
       {
         label: "Correlation",
@@ -418,7 +588,11 @@ export function projectDetailPanel(run: RunState): DetailPanelProps {
   const paykeyRows: DetailRow[] = [];
   if (run.paykey !== undefined) {
     paykeyRows.push(
-      { label: "Paykey", value: run.paykey.id },
+      {
+        label: "Paykey",
+        value: run.paykey.id,
+        ...(explain ? { note: PAYKEY_ID_NOTE } : {}),
+      },
       ...(run.paykey.status !== undefined
         ? [{ label: "Status", value: run.paykey.status }]
         : []),

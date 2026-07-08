@@ -1,7 +1,16 @@
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import type { ScenarioId } from "@sse/shared";
 import {
+  ApiError,
   createEventPoller,
+  getHealth,
   getReport,
   postRuns,
   type FetchLike,
@@ -19,6 +28,7 @@ import {
   selectedRun,
   SUITE_SCENARIOS,
 } from "./state/eventStore";
+import { useExplain } from "./state/useExplain";
 import {
   projectAssertionRows,
   projectDetailPanel,
@@ -46,11 +56,38 @@ function toScenarioId(id: string): ScenarioId | null {
   return SCENARIO_IDS.has(id) ? (id as ScenarioId) : null;
 }
 
+/** Health re-check cadence — each hit costs a live sandbox request server-side
+ *  (routes.ts pings Straddle), so this stays far above the 2s event cadence. */
+const HEALTH_POLL_MS = 45_000;
+/** Poll cycles that must fail consecutively before the header shows offline. */
+const OFFLINE_AFTER_FAILURES = 2;
+
 export function Dashboard({ fetchFn }: DashboardProps) {
   const [store] = useState(() => createEventStore());
+  const [keyStatus, setKeyStatus] = useState<"ok" | "missing" | "invalid">("ok");
+  const [offline, setOffline] = useState(false);
+  const pollFailures = useRef(0);
   const [poller] = useState(() =>
     createEventPoller({
-      handlers: store.handlers,
+      handlers: {
+        // Wrap the store handlers so any successful cycle clears the offline
+        // indicator and any run of failed cycles raises it (audit: a dead
+        // server used to leave chips running and timers ticking, unsignalled).
+        onEvents: (events) => {
+          pollFailures.current = 0;
+          setOffline(false);
+          store.handlers.onEvents(events);
+        },
+        onHydrate: (snapshot) => {
+          pollFailures.current = 0;
+          setOffline(false);
+          store.handlers.onHydrate(snapshot);
+        },
+        onError: () => {
+          pollFailures.current += 1;
+          if (pollFailures.current >= OFFLINE_AFTER_FAILURES) setOffline(true);
+        },
+      },
       ...(fetchFn !== undefined ? { fetchFn } : {}),
     }),
   );
@@ -60,7 +97,27 @@ export function Dashboard({ fetchFn }: DashboardProps) {
     return () => poller.stop();
   }, [poller]);
 
+  // Header key-status pill (spec §13 Wave 5 item 7): a slow health poll keeps
+  // the pill honest and feeds the epoch gate (spec §3 — every epoch-carrying
+  // response is checked).
+  const checkHealth = useCallback(async () => {
+    try {
+      const health = await getHealth(fetchFn);
+      setKeyStatus(health.key);
+      poller.observeEpoch(health.epoch);
+    } catch {
+      // Unreachable server is the poller's offline signal, not a key state.
+    }
+  }, [fetchFn, poller]);
+
+  useEffect(() => {
+    void checkHealth();
+    const timer = setInterval(() => void checkHealth(), HEALTH_POLL_MS);
+    return () => clearInterval(timer);
+  }, [checkHealth]);
+
   const state = useSyncExternalStore(store.subscribe, store.getState);
+  const [explain, toggleExplain] = useExplain();
 
   const startRuns = useCallback(
     async (scenarios: readonly ScenarioId[]) => {
@@ -71,9 +128,14 @@ export function Dashboard({ fetchFn }: DashboardProps) {
       } catch (error) {
         // A failed start is not a crash; the health pill / console carry it.
         console.error("failed to start runs", error);
+        // A 400 here usually means the key died mid-session — re-check now
+        // instead of waiting out the health interval.
+        if (error instanceof ApiError && error.status === 400) {
+          void checkHealth();
+        }
       }
     },
-    [fetchFn, poller],
+    [checkHealth, fetchFn, poller],
   );
 
   const onRunAll = useCallback(() => {
@@ -112,27 +174,30 @@ export function Dashboard({ fetchFn }: DashboardProps) {
   }, [fetchFn]);
 
   // ---- Projections ---------------------------------------------------------
-  const items = useMemo(() => projectScenarioItems(state), [state]);
+  const items = useMemo(
+    () => projectScenarioItems(state, { explain }),
+    [state, explain],
+  );
   const run = selectedRun(state);
   const timelineNodes = useMemo(
-    () => (run === null ? [] : projectTimelineNodes(run)),
-    [run],
+    () => (run === null ? [] : projectTimelineNodes(run, { explain })),
+    [run, explain],
   );
   const runOverview = useMemo(
-    () => (run === null ? undefined : projectRunOverview(run)),
-    [run],
+    () => (run === null ? undefined : projectRunOverview(run, { explain })),
+    [run, explain],
   );
   const evidence = useMemo(
     () => (run === null ? undefined : projectEvidence(run)),
     [run],
   );
   const exchanges = useMemo(
-    () => (run === null ? [] : projectExchanges(run)),
-    [run],
+    () => (run === null ? [] : projectExchanges(run, { explain })),
+    [run, explain],
   );
   const detailPanel = useMemo(
-    () => (run === null ? undefined : projectDetailPanel(run)),
-    [run],
+    () => (run === null ? undefined : projectDetailPanel(run, { explain })),
+    [run, explain],
   );
   const inspectorEntries = useMemo(
     () => (run === null ? [] : projectInspectorEntries(run)),
@@ -143,6 +208,12 @@ export function Dashboard({ fetchFn }: DashboardProps) {
     [run],
   );
   const assertionRows = useMemo(() => projectAssertionRows(state), [state]);
+  // Recordings appear when runs complete — this token refreshes the replay list.
+  const completedCount = useMemo(
+    () =>
+      Object.values(state.runs).filter((r) => r.completed !== undefined).length,
+    [state],
+  );
 
   const summary = state.summary;
   const suiteLive = summary.covered > 0 && !summary.allSettled;
@@ -156,7 +227,10 @@ export function Dashboard({ fetchFn }: DashboardProps) {
   return (
     <AppShell
       onRunAll={onRunAll}
-      keyStatus="ok"
+      keyStatus={keyStatus}
+      offline={offline}
+      explainEnabled={explain}
+      onToggleExplain={toggleExplain}
       scenarios={
         <div className="space-y-4">
           <ScenarioList
@@ -167,12 +241,18 @@ export function Dashboard({ fetchFn }: DashboardProps) {
             onSelect={onSelect}
             onRun={onRun}
           />
-          <ReplayPanel fetchFn={fetchFn} />
+          <ReplayPanel
+            fetchFn={fetchFn}
+            explain={explain}
+            refreshToken={completedCount}
+          />
         </div>
       }
       lifecycle={
         run === null || runOverview === undefined ? undefined : (
-          <div className="mx-auto w-full max-w-[460px]">
+          // Keyed by run so open learning notes never leak across scenario
+          // switches or epoch resets (audit finding).
+          <div key={run.runId} className="mx-auto w-full max-w-[460px]">
             <RunOverview {...runOverview} />
             <Timeline
               nodes={timelineNodes}

@@ -126,12 +126,28 @@ async function renderDashboard(api: FakeApi) {
 }
 
 describe("Dashboard wiring", () => {
+  it("wires the header key pill to /api/health (spec Wave 5 item 7)", async () => {
+    const api = createFakeApi();
+    const fetchFn: FetchLike = async (input, init) =>
+      String(input).startsWith("/api/health")
+        ? ({
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({ epoch: EPOCH, key: "invalid" }),
+          } as unknown as Response)
+        : api.fetchFn(input, init);
+    render(<Dashboard fetchFn={fetchFn} />);
+    await waitFor(() =>
+      expect(document.querySelector('[data-status="invalid"]')).toBeTruthy(),
+    );
+  });
+
   it("renders the five scenario rows idle with labeled chips (not color-alone, design §10)", async () => {
     const api = createFakeApi();
     await renderDashboard(api);
 
-    const list = screen.getByRole("listbox", { name: "Scenarios" });
-    const rows = within(list).getAllByRole("option");
+    const list = screen.getByRole("list", { name: "Scenarios" });
+    const rows = within(list).getAllByRole("listitem");
     expect(rows.length).toBe(5);
     // Every chip carries a TEXT label — status is never color-alone.
     for (const row of rows) {
@@ -189,10 +205,10 @@ describe("Dashboard wiring", () => {
     );
     expect(screen.getByText("watching for reversal…")).toBeTruthy();
     // Chip mirrors the watching state.
-    const list = screen.getByRole("listbox", { name: "Scenarios" });
+    const list = screen.getByRole("list", { name: "Scenarios" });
     expect(
       within(list)
-        .getAllByRole("option")[2]
+        .getAllByRole("listitem")[2]
         ?.querySelector('[data-variant="watching"]'),
     ).toBeTruthy();
 

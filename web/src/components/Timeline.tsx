@@ -1,5 +1,7 @@
+import { useState } from "react";
 import { EvidenceCard, type EvidenceCardProps } from "./EvidenceCard";
 import { formatDelta, formatWallClock } from "./format";
+import { NotePanel, NoteTerm, type NoteContent } from "./Note";
 import { useNow } from "./useNow";
 
 /**
@@ -34,6 +36,13 @@ export interface TimelineNode {
   returnCode?: string;
   /** Captured reason, rendered underneath cancelled nodes. */
   reason?: string;
+  /** Learning note for the status (terminal nodes only; absent = Explain off). */
+  statusNote?: NoteContent;
+  /** Learning note for the return-code chip. */
+  codeNote?: NoteContent;
+  /** Documented-deviation callout, rendered as an always-visible subordinate
+   *  block under the node (live C/D terminals; contract C provisional). */
+  deviation?: NoteContent;
 }
 
 export type TimelineProps = {
@@ -92,6 +101,10 @@ const LABEL_COLOR: Record<TimelineNodeKind, string> = {
 export function Timeline({ nodes, live = false, evidence }: TimelineProps) {
   const lastNode = nodes[nodes.length - 1];
   const now = useNow(live && evidence === undefined && lastNode !== undefined);
+  // One learning note open at a time, keyed `${node.id}:status|code`.
+  const [openNote, setOpenNote] = useState<string | null>(null);
+  const toggleNote = (key: string) =>
+    setOpenNote((current) => (current === key ? null : key));
 
   if (evidence !== undefined) return <EvidenceCard {...evidence} />;
 
@@ -110,28 +123,77 @@ export function Timeline({ nodes, live = false, evidence }: TimelineProps) {
         <li key={node.id} className="animate-node-entry relative">
           <NodeDot kind={node.kind} pulsing={node.kind === "provisional" && live} />
           <div className="flex items-baseline gap-2">
-            <span
-              className={`wire-quote font-semibold ${LABEL_COLOR[node.kind]}`}
-            >
-              {node.kind === "provisional"
-                ? `${node.status} — provisional`
-                : node.status}
-            </span>
+            {node.statusNote !== undefined ? (
+              // The status label is its own note trigger (design §6.6).
+              <NoteTerm
+                open={openNote === `${node.id}:status`}
+                onToggle={() => toggleNote(`${node.id}:status`)}
+                subject={node.status}
+                className={`wire-quote font-semibold ${LABEL_COLOR[node.kind]}`}
+              >
+                {node.kind === "provisional"
+                  ? `${node.status} — provisional`
+                  : node.status}
+              </NoteTerm>
+            ) : (
+              <span
+                className={`wire-quote font-semibold ${LABEL_COLOR[node.kind]}`}
+              >
+                {node.kind === "provisional"
+                  ? `${node.status} — provisional`
+                  : node.status}
+              </span>
+            )}
             {node.kind === "paid" && (
               <span aria-label="terminal success" className="text-status-paid">
                 ✓
               </span>
             )}
-            {node.returnCode !== undefined && (
-              <span className="wire-quote rounded-chip bg-status-failed/10 px-1.5 py-0.5 text-xs text-status-failed">
-                {node.returnCode}
-              </span>
-            )}
+            {node.returnCode !== undefined &&
+              (node.codeNote !== undefined ? (
+                <NoteTerm
+                  open={openNote === `${node.id}:code`}
+                  onToggle={() => toggleNote(`${node.id}:code`)}
+                  subject={node.returnCode}
+                  className="wire-quote rounded-chip bg-status-failed/10 px-1.5 py-0.5 text-xs text-status-failed decoration-status-failed"
+                >
+                  {node.returnCode}
+                </NoteTerm>
+              ) : (
+                <span className="wire-quote rounded-chip bg-status-failed/10 px-1.5 py-0.5 text-xs text-status-failed">
+                  {node.returnCode}
+                </span>
+              ))}
             <span className="flex-1" />
             <span className="wire-quote shrink-0 text-xs text-fg-muted">
               {formatWallClock(node.at)}
             </span>
           </div>
+          {node.statusNote !== undefined && openNote === `${node.id}:status` && (
+            <NotePanel note={node.statusNote} />
+          )}
+          {node.codeNote !== undefined && openNote === `${node.id}:code` && (
+            <NotePanel note={node.codeNote} />
+          )}
+          {/* Deviation callout (design §6.6): always visible while Explain is
+              on — this is the one place the sandbox contradicts the docs, so
+              it must not hide behind a click. Visually subordinate to the
+              node; the provisional-paid element stays the loud one (§6.2). */}
+          {node.deviation !== undefined && (
+            <div className="mt-1 rounded-inset border-l-2 border-status-provisional bg-surface-inset px-2 py-1.5 text-xs leading-5 text-fg-secondary">
+              <span className="font-medium text-fg">sandbox deviation:</span>{" "}
+              <span>{node.deviation.short}</span>
+              {node.deviation.detail !== undefined && (
+                <span> {node.deviation.detail}</span>
+              )}
+              {node.deviation.source !== undefined && (
+                <span className="wire-quote text-fg-muted">
+                  {" "}
+                  · {node.deviation.source}
+                </span>
+              )}
+            </div>
+          )}
           {node.elapsedMs !== undefined && (
             <div className="wire-quote mt-0.5 text-xs text-fg-muted">
               {formatDelta(node.elapsedMs)}

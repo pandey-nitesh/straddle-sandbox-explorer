@@ -28,6 +28,18 @@ export interface ExchangeEntry {
   responseBody?: unknown;
   /** Retry attempts, rendered as indented sub-entries (`attempt 2 · backoff 1.4s`). */
   retries?: ExchangeRetry[];
+  /** One-line "what this call does" learning note (absent = Explain off). */
+  endpointNote?: string;
+  /** "Fields to notice" — curated notes for fields present in this exchange
+   *  (absent/empty = Explain off or nothing notable). */
+  fieldNotes?: ExchangeFieldNote[];
+}
+
+export interface ExchangeFieldNote {
+  /** Verbatim field path (or header name), rendered mono. */
+  path: string;
+  short: string;
+  source?: string;
 }
 
 export interface ExchangeLogProps {
@@ -96,6 +108,11 @@ function Exchange({ entry }: { entry: ExchangeEntry }) {
 
       {open && (
         <div className="mt-2 space-y-2">
+          {entry.endpointNote !== undefined && (
+            <p className="text-xs leading-5 text-fg-secondary">
+              {entry.endpointNote}
+            </p>
+          )}
           {entry.requestBody !== undefined && (
             <div className="border-l-[3px] border-l-wire-client pl-2">
               <div className="mb-1 text-xs text-fg-muted">request</div>
@@ -106,6 +123,27 @@ function Exchange({ entry }: { entry: ExchangeEntry }) {
             <div className="border-l-[3px] border-l-wire-server pl-2">
               <div className="mb-1 text-xs text-fg-muted">response</div>
               <JsonBlock value={entry.responseBody} />
+            </div>
+          )}
+          {/* "Fields to notice" (design §6.6): one compact scannable block
+              BELOW the bodies — never annotations inside the verbatim JSON. */}
+          {entry.fieldNotes !== undefined && entry.fieldNotes.length > 0 && (
+            <div className="rounded-inset bg-surface-inset px-2 py-1.5">
+              <div className="mb-1 text-xs font-medium text-fg-secondary">
+                Fields to notice
+              </div>
+              <ul className="space-y-1">
+                {entry.fieldNotes.map((note) => (
+                  <li key={note.path} className="text-xs leading-5 text-fg-secondary">
+                    <span className="wire-quote text-fg">{note.path}</span>
+                    {" — "}
+                    {note.short}
+                    {note.source !== undefined && (
+                      <span className="wire-quote text-fg-muted"> · {note.source}</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
         </div>

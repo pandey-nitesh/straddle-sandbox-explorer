@@ -1,9 +1,13 @@
+import { useState } from "react";
+import { NotePanel, NoteTerm, type NoteContent } from "./Note";
 import { StatusChip, type ChipVariant } from "./StatusChip";
 
 export interface RunOverviewRow {
   label: string;
   value: string;
   mono?: boolean;
+  /** Learning note for the row's value (absent = Explain off). */
+  note?: NoteContent;
 }
 
 export interface RunOverviewProps {
@@ -23,6 +27,8 @@ export function RunOverview({
   chipLabel,
   rows,
 }: RunOverviewProps) {
+  // One learning note open at a time, keyed by row label.
+  const [openNoteLabel, setOpenNoteLabel] = useState<string | null>(null);
   return (
     <section className="mb-5 rounded-inset border border-edge bg-surface-inset p-3">
       <div className="flex items-start gap-3">
@@ -50,9 +56,12 @@ export function RunOverview({
       )}
       <dl className="mt-3 space-y-2">
         {rows.map((row) => (
+          // dl children must directly contain the dt/dd groups — the note
+          // panel joins the same grid as a spanning cell, never a sibling
+          // wrapper (HTML conformance; audit finding).
           <div
             key={row.label}
-            className="grid grid-cols-[88px_minmax(0,1fr)] gap-2"
+            className="grid grid-cols-[88px_minmax(0,1fr)] gap-x-2"
           >
             <dt className="text-xs text-fg-muted">{row.label}</dt>
             <dd
@@ -60,7 +69,26 @@ export function RunOverview({
                 row.mono === true ? "wire-quote" : ""
               }`}
             >
-              {row.value}
+              {row.note !== undefined ? (
+                // The value is its own note trigger (design §6.6).
+                <NoteTerm
+                  open={openNoteLabel === row.label}
+                  onToggle={() =>
+                    setOpenNoteLabel((current) =>
+                      current === row.label ? null : row.label,
+                    )
+                  }
+                  subject={row.value}
+                  className="max-w-full whitespace-normal break-words"
+                >
+                  {row.value}
+                </NoteTerm>
+              ) : (
+                row.value
+              )}
+              {row.note !== undefined && openNoteLabel === row.label && (
+                <NotePanel note={row.note} />
+              )}
             </dd>
           </div>
         ))}

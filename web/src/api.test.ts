@@ -213,9 +213,10 @@ describe("typed endpoint wrappers", () => {
     await expect(getRecordings(server.fetchFn)).resolves.toEqual([
       { run_id: runId, path: `/tmp/${runId}.jsonl`, complete: false },
     ]);
-    await expect(getRecordingEvents(runId, server.fetchFn)).resolves.toEqual(
-      recording,
-    );
+    await expect(getRecordingEvents(runId, server.fetchFn)).resolves.toEqual({
+      events: recording,
+      truncated: false,
+    });
   });
 
   it("postRuns serializes the scenario selection as JSON", async () => {

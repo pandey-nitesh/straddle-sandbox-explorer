@@ -1,12 +1,14 @@
 import { useEffect, useState } from "react";
 import { Dashboard } from "./Dashboard";
 import { StartupState } from "./components/StartupState";
-import { fetchHealth } from "./health";
+import { getHealth } from "./api";
 
 /**
  * Startup flow (spec §10): health loading → missing-key instructions →
- * invalid-key error → ready. A network failure (server not up yet in dev)
- * keeps the checking card up and retries every 2s.
+ * invalid-key error → ready. Every non-ready phase re-checks every 2s —
+ * a network failure (server not up yet in dev) keeps the checking card up,
+ * and the missing/invalid cards flip straight into the app once the user
+ * adds a key and restarts the server, with no manual browser reload.
  */
 type Startup =
   | { phase: "checking" }
@@ -20,27 +22,29 @@ export function App() {
   const [startup, setStartup] = useState<Startup>({ phase: "checking" });
 
   useEffect(() => {
+    if (startup.phase === "ready") return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     const check = async (): Promise<void> => {
       try {
-        const health = await fetchHealth();
+        const health = await getHealth();
         if (cancelled) return;
         if (health.key === "ok") {
           setStartup({ phase: "ready" });
-        } else if (health.key === "missing") {
-          setStartup({ phase: "missing" });
-        } else {
-          setStartup(
-            health.error_body === undefined
+          return;
+        }
+        setStartup(
+          health.key === "missing"
+            ? { phase: "missing" }
+            : health.error_body === undefined
               ? { phase: "invalid" }
               : { phase: "invalid", errorBody: health.error_body },
-          );
-        }
+        );
       } catch {
-        if (!cancelled) timer = setTimeout(() => void check(), RETRY_MS);
+        // Server not reachable yet — stay in the current phase.
       }
+      if (!cancelled) timer = setTimeout(() => void check(), RETRY_MS);
     };
 
     void check();
@@ -48,7 +52,7 @@ export function App() {
       cancelled = true;
       if (timer !== undefined) clearTimeout(timer);
     };
-  }, []);
+  }, [startup.phase]);
 
   switch (startup.phase) {
     case "ready":

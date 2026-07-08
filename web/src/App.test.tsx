@@ -107,6 +107,7 @@ describe("App startup flow (GET /api/health)", () => {
       vi.fn(async () => ({
         ok: true,
         status: 200,
+        text: async () => JSON.stringify(body),
         json: async () => body,
       })),
     );

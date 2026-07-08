@@ -142,6 +142,19 @@ Centered single card, max-width 420px. *Missing key:* title "Add your sandbox AP
 
 One primary button style (accent fill, white text, radius 8px, 500) used only for Run all / Run / Download report.json; everything else is ghost or text style — a demo tool has no business having five button variants. Summary strip: mono suite line (`3/5 passed · 11:42 elapsed`) + report download; expands to per-scenario assertion rows (§6.2 pattern). P1 toasts (bottom-right, 4s, status-colored edge) announce transitions on unselected scenarios: `C · paid — provisional`.
 
+### 6.6 Learning notes and the Explain toggle
+
+The learning layer (spec §19) teaches the Straddle API in place, without changing the demo register. Rules:
+
+- **Sparse by default.** Only terminal statuses, return codes, `sandbox_outcome` values, endpoint purposes, known deviations, and a short curated list of high-value JSON fields get annotations. Nothing else grows inline chrome; depth belongs to the reference overlay (§6.7, P-later).
+- **Affordance:** the annotated wire term is itself the trigger — a dotted underline in `--brand-accent-strong` (full opacity: the underline is the sole "explainable" indicator, so it must clear WCAG 1.4.11's 3:1 non-text contrast; the teal-700 fallback is ~5.5:1 on the app surfaces) marks "explainable", click-to-expand (never hover — projectors, keyboards) into an inline prose block on `--surface-inset` that opens with the term verbatim (recovering values the row truncated). Zero layout width added in the tight panes. One note open per list at a time. Disclosure appears instantly: the three-animation budget (§7) is untouched.
+- **"Fields to notice" (wire pane):** one compact block below an expanded exchange's request/response JSON — `path — fact · citation` rows for the curated high-value fields actually present in that exchange (plus the `Idempotency-Key` header note on creates, since headers deliberately never enter captures). Never annotations inside the JSON itself: bodies stay verbatim testimony (§6.3).
+- **Deviation callouts (lifecycle pane):** where the sandbox contradicts the docs (live C/D terminals; contract C's provisional paid node), a small always-visible block under the node — prefixed "sandbox deviation:", amber left edge, visually subordinate to the node so the provisional-paid element stays the loud one (§6.2). Always visible while Explain is on because a documented contradiction must not hide behind a click.
+- **Structure note:** the scenario rows are `role="list"`/`listitem` (not `listbox`/`option`) — options give their children presentational semantics, which would strip the Run and note buttons from assistive tech.
+- **Voice:** the note body is prose in our voice; quoted wire terms inside it stay mono verbatim (§4). Each note ends with its `api-notes §n` citation in muted mono — evidence, per the register.
+- **Explain toggle:** a ghost header button (`aria-pressed`), persisted locally, default on. Off restores the exact pre-learning screen — projections attach no note fields at all.
+- **Placement discipline:** most annotations live in the Wire pane; Lifecycle callouts are limited to the state machine (terminal nodes, code chips) and documented deviations so the center pane stays uncramped.
+
 ## 7. Motion
 
 Three animations total, each carrying information: (1) timeline node entry — 200ms fade + 4px rise, the heartbeat of "live"; (2) the provisional-paid pulse — 2s ease opacity 1→0.55→1, anxiety with a purpose, stops at terminal; (3) chip color cross-fades at 150ms. Nothing else moves. `prefers-reduced-motion`: entries appear instantly and the pulse becomes a static half-filled dot — the state stays legible because color+shape+label already carry it.

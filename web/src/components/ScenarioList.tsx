@@ -1,5 +1,6 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
+import { NotePanel, NoteTerm, type NoteContent } from "./Note";
 import { StatusChip, type ChipVariant } from "./StatusChip";
 import { formatElapsed } from "./format";
 import { useNow } from "./useNow";
@@ -19,6 +20,8 @@ export interface ScenarioListItem {
   /** Forced sandbox outcome, verbatim wire vocabulary — rendered as
    *  `sandbox_outcome: reversed_insufficient_funds` in mono-muted. */
   outcome?: string;
+  /** Learning note for the outcome line (absent = Explain off). */
+  outcomeNote?: NoteContent;
   chip: ChipVariant;
   /** Chip text; defaults to the variant word. */
   chipLabel?: string;
@@ -43,8 +46,13 @@ export function ScenarioList({
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   const anyRunning = items.some((i) => i.runningSinceEpochMs !== undefined);
   const now = useNow(anyRunning);
+  // One outcome note open at a time across the list.
+  const [openNoteId, setOpenNoteId] = useState<string | null>(null);
 
   // Arrow-key navigable list (design §10): roving focus over the rows.
+  // role list/listitem, not listbox/option — options give their descendants
+  // presentational semantics, which would strip the Run and note buttons
+  // from assistive tech (audit: nested-interactive).
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
     const focused = items.findIndex(
@@ -62,7 +70,7 @@ export function ScenarioList({
 
   return (
     <div
-      role="listbox"
+      role="list"
       aria-label="Scenarios"
       className="space-y-2"
       onKeyDown={handleKeyDown}
@@ -78,12 +86,15 @@ export function ScenarioList({
               if (el === null) rowRefs.current.delete(item.id);
               else rowRefs.current.set(item.id, el);
             }}
-            role="option"
-            aria-selected={selected}
+            role="listitem"
+            aria-current={selected || undefined}
             tabIndex={tabbable ? 0 : -1}
             data-selected={selected || undefined}
             onClick={() => onSelect?.(item.id)}
             onKeyDown={(event) => {
+              // Only when the row itself is focused — a bubbled Enter/Space
+              // from the Run/note buttons must keep its native click.
+              if (event.target !== event.currentTarget) return;
               if (event.key === "Enter" || event.key === " ") {
                 event.preventDefault();
                 onSelect?.(item.id);
@@ -113,9 +124,26 @@ export function ScenarioList({
                 swapped for a live elapsed mono timer while running. */}
             <div className="mt-1 flex min-h-6 items-center justify-between gap-2">
               {item.outcome !== undefined ? (
-                <span className="wire-quote truncate text-xs text-fg-muted">
-                  sandbox_outcome: {item.outcome}
-                </span>
+                item.outcomeNote !== undefined ? (
+                  // The mono term is its own note trigger (design §6.6) —
+                  // zero layout cost in this 280px pane.
+                  <NoteTerm
+                    open={openNoteId === item.id}
+                    onToggle={() =>
+                      setOpenNoteId((current) =>
+                        current === item.id ? null : item.id,
+                      )
+                    }
+                    subject={item.outcome}
+                    className="wire-quote min-w-0 truncate text-xs text-fg-muted"
+                  >
+                    sandbox_outcome: {item.outcome}
+                  </NoteTerm>
+                ) : (
+                  <span className="wire-quote truncate text-xs text-fg-muted">
+                    sandbox_outcome: {item.outcome}
+                  </span>
+                )
               ) : (
                 <span />
               )}
@@ -140,6 +168,9 @@ export function ScenarioList({
                 </button>
               )}
             </div>
+            {item.outcomeNote !== undefined && openNoteId === item.id && (
+              <NotePanel note={item.outcomeNote} />
+            )}
           </div>
         );
       })}
