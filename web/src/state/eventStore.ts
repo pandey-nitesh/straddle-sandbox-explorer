@@ -133,6 +133,33 @@ export interface PaykeyEvidence {
   accountType?: string;
 }
 
+/**
+ * A correlated inbound webhook (P2-3.1/3.4). Webhooks are CORROBORATING
+ * evidence, not lifecycle nodes — they are derived here into their own list
+ * and never enter `timeline`, because polling stays the authoritative signal
+ * (spec §19 "polling authoritative" / P2 principles). Verification state and
+ * the already-server-redacted `detail` ride through verbatim for the
+ * wire-area webhook view.
+ */
+export interface WebhookEvidence {
+  /** Bus seq of the webhook.received event — stable key, ordering. */
+  seq: number;
+  /** Svix/Straddle delivery id (the dedup key). */
+  eventId: string;
+  /** Event type, e.g. `charge.event.v1` — rendered mono, verbatim. */
+  webhookType: string;
+  /** Signature verification result — verified vs caution treatment (design §3). */
+  verified: boolean;
+  /** The correlated charge/customer/paykey id, when the payload named one. */
+  resourceId?: string;
+  /** Straddle's delivery time, when present. */
+  deliveredAt?: string;
+  /** Recorded event timestamp (ordering / display fallback). */
+  at: string;
+  /** Redacted payload summary — verbatim post server-side redaction (spec §8). */
+  detail?: unknown;
+}
+
 export interface RunState {
   runId: string;
   scenarioId: ScenarioId;
@@ -159,6 +186,11 @@ export interface RunState {
   review?: ReviewEvidence;
   paykey?: PaykeyEvidence;
   refusal?: RefusalEvidence;
+  /**
+   * Correlated inbound webhooks — corroborating evidence, NOT timeline nodes.
+   * Always present (empty when a run received none) so consumers never guard.
+   */
+  webhooks: WebhookEvidence[];
   /** Raw events, sorted by seq (gaps expected), deduped by seq. */
   events: RunEvent[];
 }
@@ -412,6 +444,7 @@ function deriveRun(events: readonly RunEvent[]): RunState | null {
   const assertions: AssertionRow[] = [];
   /** delay_ms from retry.scheduled, keyed for the upcoming attempt. */
   const pendingBackoff = new Map<string, number>();
+  const webhooks: WebhookEvidence[] = [];
   let completedEvent: RunCompletedEvent | undefined;
   let review: ReviewEvidence | undefined;
   let paykey: PaykeyEvidence | undefined;
@@ -558,6 +591,28 @@ function deriveRun(events: readonly RunEvent[]): RunState | null {
         break;
       }
 
+      case "webhook.received": {
+        // Corroborating evidence ONLY — deliberately not pushed to `timeline`.
+        // A webhook reports what the sandbox saw; the polled lifecycle stays
+        // authoritative (spec §19 / P2 principle), so a webhook is never drawn
+        // as a payment node.
+        webhooks.push({
+          seq: event.seq,
+          eventId: event.event_id,
+          webhookType: event.webhook_type,
+          verified: event.verified,
+          at: event.timestamp,
+          ...(event.resource_id !== undefined
+            ? { resourceId: event.resource_id }
+            : {}),
+          ...(event.delivered_at !== undefined
+            ? { deliveredAt: event.delivered_at }
+            : {}),
+          ...(event.detail !== undefined ? { detail: event.detail } : {}),
+        });
+        break;
+      }
+
       case "run.completed": {
         completedEvent = event;
         break;
@@ -610,6 +665,7 @@ function deriveRun(events: readonly RunEvent[]): RunState | null {
     timeline,
     exchanges,
     assertions,
+    webhooks,
     ...(review !== undefined ? { review } : {}),
     ...(paykey !== undefined ? { paykey } : {}),
     ...(refusal !== undefined ? { refusal } : {}),

@@ -30,6 +30,7 @@
   --color-status-fail: var(--status-fail);
   --color-wire-client: var(--wire-client);
   --color-wire-server: var(--wire-server);
+  --color-wire-webhook: var(--wire-webhook);
   --color-white: #ffffff; /* on-chip/on-button text (AA on its assigned fills) */
 
   --font-sans: "Inter", system-ui, sans-serif;

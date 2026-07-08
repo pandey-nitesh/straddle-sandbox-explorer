@@ -22,6 +22,10 @@ import type {
   InspectorEntry,
 } from "../components/InspectorPanel";
 import type {
+  WebhookPanelProps,
+  WebhookViewEntry,
+} from "../components/WebhookPanel";
+import type {
   TimelineNode as TimelineViewNode,
   TimelineNodeKind,
 } from "../components/Timeline";
@@ -45,6 +49,7 @@ import {
   returnCodeNote,
   statusNote,
   timelineDeviationsFor,
+  webhookNote,
 } from "../knowledge";
 
 /**
@@ -522,6 +527,42 @@ export function projectExchanges(
 }
 
 // ---------------------------------------------------------------------------
+// Webhook evidence (P2-3.4 — corroborating, distinct from the wire log)
+// ---------------------------------------------------------------------------
+
+/**
+ * Inbound-webhook evidence for the wire-area Webhooks view. The store already
+ * keeps webhooks OUT of the payment timeline (polling authoritative); this only
+ * shapes them for display. The learning note (Explain on) explains the
+ * webhook↔polling relationship and attaches once, at the panel head — never
+ * per row — and only when there is evidence to explain.
+ */
+export function projectWebhooks(
+  run: RunState,
+  opts: ProjectionOptions = {},
+): WebhookPanelProps {
+  const explain = opts.explain ?? false;
+  const entries: WebhookViewEntry[] = run.webhooks.map((webhook) => ({
+    id: String(webhook.seq),
+    webhookType: webhook.webhookType,
+    verified: webhook.verified,
+    ...(webhook.resourceId !== undefined
+      ? { resourceId: webhook.resourceId }
+      : {}),
+    ...(webhook.deliveredAt !== undefined
+      ? { deliveredAt: webhook.deliveredAt }
+      : {}),
+    ...(webhook.detail !== undefined ? { detail: webhook.detail } : {}),
+  }));
+  const note =
+    explain && entries.length > 0 ? toNote(webhookNote()) : undefined;
+  return {
+    entries,
+    ...(note !== undefined ? { note } : {}),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // P1 right-pane details
 // ---------------------------------------------------------------------------
 
@@ -648,7 +689,8 @@ function summarizeEvent(event: RunState["events"][number]): string {
     case "run.started":
       return event.scenario.label;
     case "webhook.received":
-      // Stored/inspectable but not yet surfaced in a dedicated pane (P2-3.4).
+      // Also surfaced as first-class evidence in the wire-area Webhooks view
+      // (P2-3.4); this console/inspector one-liner stays for the raw stream.
       return `webhook ${event.webhook_type} ${event.verified ? "verified" : "unverified"}`;
   }
 }

@@ -13,7 +13,8 @@ export type KnowledgeCategory =
   | "paykey-status"
   | "return-code"
   | "sandbox-outcome"
-  | "endpoint";
+  | "endpoint"
+  | "webhook";
 
 export interface KnowledgeEntry {
   /** Stable id; doubles as the Reference overlay anchor unless overridden. */

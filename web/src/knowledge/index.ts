@@ -28,6 +28,7 @@ export {
 } from "./outcomes";
 export { ENDPOINTS, matchEndpoint } from "./endpoints";
 export { fieldNotesFor, type FieldNote } from "./fields";
+export { WEBHOOK_NOTES, webhookNote, webhookTypeNote } from "./webhooks";
 export {
   DEVIATIONS,
   deviationById,

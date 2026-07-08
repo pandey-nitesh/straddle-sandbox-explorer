@@ -14,6 +14,7 @@ import {
   projectRunOverview,
   projectScenarioItems,
   projectTimelineNodes,
+  projectWebhooks,
 } from "./projections";
 
 /**
@@ -310,6 +311,55 @@ describe("learning notes on wire exchanges", () => {
     for (const entry of projectExchanges(run)) {
       expect(entry.endpointNote).toBeUndefined();
     }
+  });
+});
+
+describe("webhook evidence projection (P2-3.4)", () => {
+  const withWebhook = (): RunEvent[] => [
+    started(1, "run-a", DEF_A),
+    {
+      type: "webhook.received",
+      seq: 2,
+      timestamp: at(2),
+      run_id: "run-a",
+      scenario_id: "a",
+      event_id: "evt_1",
+      webhook_type: "charge.event.v1",
+      verified: true,
+      resource_id: "chg_1",
+      delivered_at: at(2),
+      detail: { data: { id: "chg_1", status: "paid" } },
+    },
+  ];
+
+  it("yields one row per webhook with the right fields", () => {
+    const run = runStateOf(withWebhook(), "a");
+    const { entries } = projectWebhooks(run);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toEqual({
+      id: "2",
+      webhookType: "charge.event.v1",
+      verified: true,
+      resourceId: "chg_1",
+      deliveredAt: at(2),
+      detail: { data: { id: "chg_1", status: "paid" } },
+    });
+  });
+
+  it("attaches the learning note with explain on, and none with it off", () => {
+    const run = runStateOf(withWebhook(), "a");
+    const on = projectWebhooks(run, { explain: true });
+    expect(on.note?.short).toContain("corroborate");
+    expect(on.note?.source).toMatch(/^api-notes §/);
+    expect(projectWebhooks(run, { explain: false }).note).toBeUndefined();
+    expect(projectWebhooks(run).note).toBeUndefined();
+  });
+
+  it("is empty (and note-free) for a run with no webhooks", () => {
+    const run = runStateOf([started(1, "run-a", DEF_A)], "a");
+    const panel = projectWebhooks(run, { explain: true });
+    expect(panel.entries).toEqual([]);
+    expect(panel.note).toBeUndefined();
   });
 });
 

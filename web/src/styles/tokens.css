@@ -37,6 +37,10 @@
                                       own client-log label color */
   --wire-server: #a855f7;          /* purple-500 · Straddle's responses — matches
                                       their server-log label color */
+  --wire-webhook: #6366f1;         /* indigo-500 · inbound webhook evidence — a
+                                      THIRD provenance, deliberately distinct from
+                                      client teal / server purple and from every
+                                      semantic status color (P2-3.4) */
 
   /* ---- Shape, space, elevation ---- */
   --radius-card: 12px;
