@@ -149,14 +149,17 @@ Each wave: in-workflow verify stage + my out-of-workflow gate (tests + live/manu
 
 ---
 
-# P2 continuation plan
+# P2 continuation plan (PR-per-subtask delivery)
 
-This section starts from the P1-complete baseline: A-E run from CLI and web, exchanges are recorded to JSONL, replays can drive the main lifecycle/wire panes, JSON payloads are inspectable, and the UI has the P1 detail surfaces. The original plan above stays as the historical execution plan; P2 is the next forward plan.
+This section starts from the P1-complete baseline: A–E run from CLI and web, exchanges are recorded to JSONL, replays can drive the main lifecycle/wire panes, JSON payloads are inspectable, and the UI has the P1 detail surfaces. The original plan above stays as the historical execution plan; P2 is the next forward plan.
+
+**Delivery model change vs P0/P1:** P0/P1 shipped as per-wave commits on a single long-lived branch merged in one PR. P2 changes this: **every subtask below is its own branch and its own PR into `main`**, so history is maintainable at subtask granularity — each PR is independently reviewable, revertable, and bisectable. Waves become milestones (an ordering + gate boundary), not branches.
 
 ## P2 scope
 
-Primary P2 work from `docs/spec.md` Wave 6:
+Primary P2 work from `docs/spec.md` Wave 6, plus one new workstream:
 
+- **Resilience hardening (new, P2-R):** restart recovery, interrupt-safe runs, fault-tolerant polling and recording, SSE reconnection, bounded memory, and UI error isolation — the app degrades to diagnostics, never to crashes or silent lies.
 - cURL copy for redacted API exchanges.
 - Replay scrubber polish beyond basic 10x playback.
 - Toasts for important state transitions on unselected scenarios.
@@ -165,113 +168,178 @@ Primary P2 work from `docs/spec.md` Wave 6:
 - Inbound Straddle webhooks.
 - Payouts, after a separate API truth check.
 
+## P2 delivery model — one PR per subtask
+
+- **Branch naming:** `p2/<wave>.<n>-<slug>` (e.g. `p2/3.2-webhook-receiver`). PR title: `P2-<wave>.<n>: <what it does>`. One agent per PR; the branch (worktree) is the isolation boundary.
+- **Base branch is `main`.** A PR that depends on an unmerged PR is **stacked**: branched from the parent PR's branch and retargeted to `main` once the parent merges. Stacks stay ≤2 deep — a deeper dependency chain means the work is sequenced, not stacked.
+- **Contract PRs come first.** Any `shared/` change is always its own PR, merged before dependents, carrying the synchronized fixture updates (engine tests, HTTP tests, UI reducer fixtures) in the same PR per §14. Dependent PRs stack on it or wait for its merge.
+- **Squash-merge every PR** so `main` reads as one commit per subtask; the PR preserves the fine-grained commit history and gate evidence. Never rebase-merge a stack out of order.
+- **PR body template:** files owned · contract impact (none, or link to the contract PR) · test evidence (typecheck, tests, `check:secrets`, web build if `web/` touched) · spec/api-notes updates included in this PR · deviations found.
+- **Merge gate (integrator, every PR):** rebase onto latest `main` → `npm run typecheck` → `npm test` → `npm run check:secrets` → web build when `web/` is touched → live smoke only where the wave table says so. A red gate goes back to the owning agent on the same branch; the integrator merges, agents never merge their own PRs.
+- **Wave gate:** a wave is done when all its PRs are merged and the wave's gate checks (below) have run green on `main` — merges never leave `main` red between waves.
+
+## P2 parallel-agent coordination
+
+- **File ownership is declared per PR** in the wave tables below and is disjoint across simultaneously open PRs — two open PRs never touch the same file. If two agents discover they need the same file, they stop; the integrator re-partitions the files or sequences the PRs (stack).
+- **Integrator-owned shared files:** root `package.json`/lockfile, `docs/spec.md`, README "Deviations from spec", and `api-notes.md` (outside P2-0). Agents request changes to these via their structured output; the integrator applies them at merge, so no two PRs ever conflict on them.
+- **Exactly one sandbox-touching lane at any moment** across all open PRs: P2-0 probes, live scenario smokes, webhook delivery tests, and payout probing are serialized behind a single lane the integrator schedules. Everyone else works mock/fixture-first against `StraddleClient`.
+- **Cross-wave parallelism is allowed where the graph permits:** P2-R (local-only, server+web internals) runs alongside P2-0 (sandbox-only, docs output) — disjoint files, disjoint lanes. Within P2-1/2/3/4, PRs marked ∥ run concurrently.
+- **Rebase discipline:** long-lived branches are the enemy of this model. Each PR targets ≤2 days of agent work; anything larger is split before it starts.
+
 ## P2 principles
 
 - **Mock-first, live-second:** every new scenario and webhook path lands against the mock/fixtures before touching the sandbox.
-- **One sandbox-touching lane at a time:** API discovery, live scenario smoke, webhook delivery, and payout probing are serialized.
-- **Polling remains the fallback:** webhooks add another signal path; they do not replace the poller until live evidence proves parity.
-- **Redaction is still a gate:** copied cURL, webhook captures, replay files, reports, console output, and UI bundles must pass the same secret/canary discipline.
-- **Contract changes are synchronized:** `shared/`, server emitters, web consumers, fixtures, and docs change in one wave whenever a new event or observation type is added.
+- **Polling remains authoritative:** webhooks add another signal path; they do not replace the poller until live evidence proves parity.
+- **Redaction is still a gate:** copied cURL, webhook captures, replay files, reports, console output, and UI bundles must pass the same secret/canary discipline — on every PR, not just at wave end.
+- **Contract changes are synchronized:** `shared/`, server emitters, web consumers, fixtures, and docs change in one (contract) PR whenever a new event or observation type is added.
 - **Document observed truth:** `api-notes.md` gets updated during discovery; unknown Straddle behavior is never filled in by guesswork.
+- **Failure is a result, not a crash:** every new failure mode (restart, interrupt, disk error, network blip, malformed webhook) must terminate in a diagnostic event and a valid partial artifact, mirroring the §6 hard-timeout stance.
 
 ## P2 dependency graph
 
 ```mermaid
 flowchart TD
-  P20["P2-0 API truth refresh"]
+  P20["P2-0 API truth refresh<br/>(1 PR, sole sandbox lane)"]
+  P2R["P2-R Resilience hardening<br/>(5 PRs, local-only ∥)"]
   G20{"Gate: api-notes.md updated<br/>scenario/webhook/payout decisions made"}
-  P21["P2-1 Wire utility + replay polish"]
-  P22["P2-2 F/G/H/I scenarios"]
-  P23["P2-3 Inbound webhooks"]
-  P24["P2-4 Payouts"]
-  P25["P2-5 Docs + finalization"]
+  GR{"Gate: kill/restart/blip drills green"}
+  P21["P2-1 Wire utility + replay + toasts<br/>(3 PRs ∥)"]
+  P22["P2-2 F/G/H/I scenarios<br/>(4 PRs, contract first)"]
+  P23["P2-3 Inbound webhooks<br/>(4 PRs, contract first)"]
+  P24["P2-4 Payouts<br/>(≤3 PRs, stacked)"]
+  P25["P2-5 Docs + finalization (1 PR)"]
 
   P20 --> G20
+  P2R --> GR
   G20 --> P21
   G20 --> P22
   G20 --> P23
   G20 --> P24
+  GR --> P23
   P21 --> P25
   P22 --> P25
   P23 --> P25
   P24 --> P25
 ```
 
-(* = sole sandbox-touching agent in its wave; parallel work is safe only after the API truth refresh has pinned the contract.)
+P2-R and P2-0 start together (disjoint files and lanes). P2-3 additionally waits on P2-R because the webhook path builds on the hardened SSE/registry/recorder behavior. Parallel scenario/webhook/payout work is safe only after P2-0 has pinned the contract.
 
-## P2-0 — API truth refresh (*, one workflow)
+## P2-R — Resilience hardening (5 PRs, mock/local only, ∥ with P2-0)
+
+Goal: every failure mode ends in a diagnostic and a valid artifact. No sandbox access needed — everything is testable with the mock client, fake clock, and process-level drills.
+
+| PR | Subtask | Files owned | Depends on |
+| --- | --- | --- | --- |
+| P2-R.1 | **Registry rehydration on boot.** Re-read `runs/*.jsonl` at server start and rebuild the latest-per-scenario registry, so reports, recordings lists, and the dashboard survive a restart instead of starting blank. A new `epoch` is still issued and live cursors still reset per spec §3; rehydrated runs that lack a `run.completed` line surface as `partial`. Corrupt/truncated lines are skipped with a logged count (valid-prefix rule, §11). Update spec §3's "in-memory" wording in the same PR. | `server/src/engine/registry.ts`, `server/src/http/server.ts` boot path, registry tests | — |
+| P2-R.2 | **Graceful shutdown + interrupt-safe CLI.** SIGINT/SIGTERM: stop starting new work, flush the recorder so partial files are valid prefixes, write the report snapshot, exit non-zero with a one-line summary. Never fabricate `run.completed` — an interrupted run must stay `partial` by the §5 definition. Fastify closes with a drain timeout. | `server/src/cli.ts`, `server/src/engine/runner.ts` shutdown hooks, `server/src/engine/recorder.ts` flush API | — |
+| P2-R.3 | **Fault-tolerant poller + recorder writes.** A retryable-exhausted `StraddleApiError` inside a poll loop counts as a missed observation and polling continues until the hard timeout (each miss emits a diagnostic-bearing `retry.scheduled`), so a transient sandbox blip can't kill a 10-minute run — non-retryable 4xx still fails immediately. Recorder append failures (disk full, permissions) emit a diagnostic event and mark the recording incomplete instead of crashing the process; the report's `diagnostics` notes the unreliable `recording_path`. | `server/src/engine/poller.ts`, `server/src/engine/recorder.ts`, fake-clock tests | — |
+| P2-R.4 | **SSE + polling hardening.** Server: heartbeat comments (~15 s), `Last-Event-ID` resume by `seq`, epoch sent on connect. Client: on SSE drop, exponential reconnect with `Last-Event-ID`; after N consecutive failures, downgrade to polling and periodically retry upgrading; epoch mismatch on reconnect triggers the existing full re-hydration. | SSE route in `server/src/http/routes.ts`, `web/src/api.ts` transport layer, transport tests | — |
+| P2-R.5 | **UI error isolation + bounded memory.** React error boundary per pane so one crashing pane never blanks the screen (boundary shows a "pane crashed — reload" card in the design.md register). Stale-data banner extends the existing unreachable chip when polls fail while runs are live. Registry event buffer gets a documented bound; `/api/events?since=` older than the retained window returns a `resync` flag so the client re-hydrates from `/api/runs` instead of silently missing events. | `web/src/App.tsx` boundaries, new `ErrorBoundary` component, `server/src/engine/registry.ts` bound + `routes.ts` resync flag (stacked on R.1) | P2-R.1 |
+
+All five PRs have disjoint file sets except R.5's registry touch, which stacks on R.1. R.2/R.3 share `recorder.ts` — R.2 merges first (flush API), R.3 stacks on it.
+
+**Gate (me):** drill battery on `main` — `kill -9` mid-run then boot: registry shows the partial run, recording is a valid prefix; SIGINT during CLI `--all`: partial report written, exit code non-zero; fake-clock poller blip test green; SSE kill/resume test green; a thrown render error in one pane leaves the other panes live. No contract changes leaked into `shared/`.
+
+## P2-0 — API truth refresh (1 PR, sole sandbox lane)
+
+One agent, probes serialized internally (Wave 0 discipline: notes in `spike/notes/`, single consolidation write). Output is a **docs-only PR** touching `api-notes.md` (this wave is the exception to integrator-owned `api-notes.md`).
 
 - Verify charge action endpoints from `api-notes.md`: `PUT /v1/charges/{id}/hold`, `/release`, and `/cancel`, including request body shape, idempotency behavior, response status, and resulting lifecycle statuses.
 - Verify the P2 scenarios F/G/I against current Straddle sandbox behavior and decide which are useful teaching scenarios versus mock-only edge cases.
-- Discover webhook setup requirements: delivery URL configuration, signing headers, event IDs, retry behavior, payload shape, and whether charge reversals can arrive webhook-only.
+- Discover webhook setup requirements: delivery URL configuration, signing headers, event IDs, retry behavior, payload shape, and whether charge reversals can arrive webhook-only (the §18.1 open question).
 - Discover payout prerequisites: endpoint availability, permissions needed, sandbox funding assumptions, request/response shape, and likely UI surface.
 - Update `api-notes.md` with observed facts, deviations, timings, and any fields that must be added to redaction fixtures.
 
-**Gate (me):** `api-notes.md` is updated; no key/account/routing/payment data survives in notes or captures; P2 scenario order is fixed; webhook signing stance is explicit. If webhook signing or payout access cannot be verified, mark that lane blocked for live mode but continue fixture/mock implementation where useful.
+**Gate (me):** `api-notes.md` PR merged; no key/account/routing/payment data survives in notes or captures; P2 scenario order is fixed; webhook signing stance is explicit; payout go/no-go decided. If webhook signing or payout access cannot be verified, mark that lane blocked for live mode but continue fixture/mock implementation where useful.
 
-## P2-1 — Wire utility, replay scrubber, toasts (web-heavy, one workflow)
+## P2-1 — Wire utility, replay scrubber, toasts (3 PRs ∥, web-only)
 
-- Add cURL copy to API exchange rows using already-redacted method/path/body data. The generated command must use placeholder auth (`$STRADDLE_API_KEY`) and must never copy raw secrets, account numbers, routing numbers, paykeys, or unredacted request bodies.
-- Upgrade replay controls from "Play 10x" to a scrubber: play/pause, seek, speed selection, current event marker, partial-recording marker, and deterministic reset.
-- Add bottom-right toasts for transitions on unselected scenarios per `docs/design.md`: short-lived, status-colored edge, no layout overlap, no duplicate spam during replay hydration.
-- Keep replay playback and live runs visually distinct so a user can tell when they are watching recorded evidence.
+| PR | Subtask | Files owned |
+| --- | --- | --- |
+| P2-1.1 | **cURL copy** on exchange rows from already-redacted method/path/body data. Generated commands use placeholder auth (`$STRADDLE_API_KEY`) and can never contain raw secrets, account/routing numbers, paykeys, or unredacted bodies — the generator takes redacted captures as its only input, and a canary test proves it. | `web/src/components/ExchangeLog.tsx`, new `web/src/lib/curl.ts` + tests |
+| P2-1.2 | **Replay scrubber:** play/pause, seek, speed selection, current-event marker, partial-recording marker, deterministic reset. Replay remains visually distinct from live runs. | replay components + replay store files, replay tests |
+| P2-1.3 | **Toasts** for transitions on unselected scenarios per design.md §6.5: short-lived, status-colored edge, no layout overlap, de-duplicated during replay hydration (replay hydration emits no toasts at all). Owns the `App.tsx` mount point so 1.1/1.2 don't touch the shell. | new `Toasts` component, `web/src/state/eventStore.ts` toast selector, `web/src/App.tsx` |
 
-**Gate (me):** component tests cover cURL generation, scrub/seek behavior, replay reset, and toast de-duping; browser smoke verifies no overlapping controls at desktop and mobile widths; `check:secrets` passes after a web build.
+All three run concurrently — file sets are disjoint by construction (1.3 exclusively owns `App.tsx` and `eventStore.ts` for this wave).
 
-## P2-2 — Scenarios F/G/I and H hold/release (engine + mock + UI, one workflow)
+**Gate (me):** component tests cover cURL generation, scrub/seek behavior, replay reset, and toast de-duping; browser smoke verifies no overlapping controls; `check:secrets` passes after a web build.
 
-- Extend scenario definitions for F/G/H/I without changing `ScenarioIdSchema` unless the actual scope changes; the enum already includes `a` through `i`.
-- Add mock schedules and deterministic recordings for each new scenario, including an explicit H hold/release lifecycle.
-- Add runner orchestration for hold/release actions, including idempotency keys, API exchange recording, poller expectations, and evaluator observations.
-- Add new report evidence only if needed; if a new observation type is required, update `shared/`, fixtures, web detail panels, and docs in the same change.
-- Teach the UI enough vocabulary for new statuses such as `on_hold`, without defaulting them into ambiguous colors or labels.
+## P2-2 — Scenarios F/G/I and H hold/release (4 PRs, contract first)
 
-**Gate (me):** mock A-I suite passes; each new scenario has at least one replay fixture; reports parse through `ReportSchema`; one live smoke per new live-supported scenario passes in serial; unsupported live behavior is documented as a deviation rather than hidden.
+| PR | Subtask | Files owned | Depends on |
+| --- | --- | --- | --- |
+| P2-2.1 | **Contract PR:** any new `RequiredObservation` kind / event fields needed per P2-0, `StraddleClient` hold/release method signatures, mock client support + scripted H schedule, synchronized fixtures. `ScenarioIdSchema` already covers a–i — no enum change unless scope changes. | `shared/src/*`, `server/src/straddle/types.ts`, `server/src/straddle/mock.ts`, fixtures | P2-0 |
+| P2-2.2 | **Engine capability:** real-client hold/release calls with idempotency keys and `api.exchange` recording; runner action steps; poller expectations for `on_hold`. *Sandbox lane holder for its live smoke.* | `server/src/straddle/client.ts`, `server/src/engine/runner.ts`, `server/src/engine/poller.ts` | stacked on P2-2.1 |
+| P2-2.3 | **Scenario defs F/G/H/I** + evaluator evidence + one replay fixture per scenario (mock-generated). Live defs assert what P2-0 actually observed; unsupported live behavior is documented as a deviation, mirroring the §18.1/§18.8 pattern. | `server/src/engine/scenarios.ts`, `server/src/engine/evaluator.ts`, `__fixtures__/` | stacked on P2-2.1, ∥ with 2.2 |
+| P2-2.4 | **UI vocabulary:** `on_hold` and any new statuses get deliberate semantic-layer colors/labels per design.md §12.3 (never a default), plus knowledge-module entries with citations. | `web/src/styles/tokens.css` additions, timeline/chip components, `web/src/knowledge/*` | stacked on P2-2.1, ∥ with 2.2/2.3 |
 
-## P2-3 — Inbound webhooks (server + shared + web, one workflow)
+**Gate (me):** mock A–I suite passes; each new scenario has at least one replay fixture; reports parse through `ReportSchema`; one live smoke per new live-supported scenario passes in serial; unsupported live behavior is documented as a deviation rather than hidden.
 
-- Add a webhook receiver route, likely `POST /api/webhooks/straddle`, with raw-body access if signing verification requires it.
-- Verify signatures in live mode if Straddle provides signing; unsigned live webhooks should be rejected or kept behind an explicit local-only fixture mode.
-- Redact and persist webhook payloads into the same recording stream as other run evidence, using new event types such as `webhook.received`, `webhook.verified`, `webhook.matched`, and `webhook.ignored` if the shared contract needs that granularity.
-- Correlate webhooks to runs by stable IDs: `external_id`, run metadata, customer/paykey/charge IDs, and event IDs. Deduplicate retries by webhook/event ID.
-- Normalize webhook-driven status changes into the existing lifecycle model only when the webhook carries newer or previously unseen state; polling remains authoritative when events disagree.
-- Surface webhook evidence in the event console, inspector, and exchange/detail panes so users can see exactly how webhook and polling signals relate.
+## P2-3 — Inbound webhooks (4 PRs, contract first; after P2-R)
 
-**Gate (me):** fixture webhook tests cover valid, invalid-signature, duplicate, unmatched, and out-of-order payloads; replay of a webhook-bearing recording works offline; local tunnel/live delivery is demonstrated if configured; otherwise the live webhook gate is recorded as blocked with a concrete reason.
+| PR | Subtask | Files owned | Depends on |
+| --- | --- | --- | --- |
+| P2-3.1 | **Contract PR:** `webhook.received` / `webhook.verified` / `webhook.matched` / `webhook.ignored` event types (granularity confirmed against P2-0 findings) + reducer/recorder fixtures. | `shared/src/events.ts`, fixtures | P2-0, P2-R |
+| P2-3.2 | **Receiver route** `POST /api/webhooks/straddle`: raw-body access for signature verification; verify signatures in live mode per P2-0; unsigned live webhooks rejected (fixture-only mode behind an explicit flag); dedupe by webhook/event ID; bounded body size and handler timeout; the receiver never crashes on malformed input — invalid payloads become `webhook.ignored` with a reason. | new `server/src/http/webhooks.ts`, route registration, receiver tests | stacked on P2-3.1 |
+| P2-3.3 | **Correlation + lifecycle normalization:** match webhooks to runs by `external_id`/resource IDs; webhook-driven status changes enter the lifecycle only when they carry newer or unseen state; polling stays authoritative on disagreement (disagreements emit a diagnostic, not a silent overwrite); out-of-order and unmatched payloads are recorded, never dropped. | new `server/src/engine/webhook-correlator.ts` (bus subscriber), correlation tests | stacked on P2-3.1, ∥ with 3.2 |
+| P2-3.4 | **UI surfaces:** webhook evidence in the event console, inspector, and exchange/detail panes so users can see exactly how webhook and polling signals relate; develops against fixtures, independent of the server PRs. | web console/inspector components | stacked on P2-3.1, ∥ with 3.2/3.3 |
 
-## P2-4 — Payouts (API-gated, one workflow after P2-0)
+**Gate (me):** fixture webhook tests cover valid, invalid-signature, duplicate, unmatched, and out-of-order payloads; replay of a webhook-bearing recording works offline; polling-only mode still passes the full suite with webhooks disabled; local tunnel/live delivery is demonstrated if configured (sandbox lane), otherwise the live webhook gate is recorded as blocked with a concrete reason.
 
-- Use P2-0 findings to decide whether payouts are a scenario, a separate panel, or a CLI-only teaching lane.
-- Add payout types, mock adapter support, and redaction coverage before adding any UI.
-- Implement the smallest useful payout path first: create/observe/report, with clear evidence and no assumptions about settlement timing beyond observed sandbox behavior.
-- Add UI only after the engine/report shape is stable, likely as a dedicated evidence card or wire-tab section rather than overloading charge lifecycle.
+## P2-4 — Payouts (≤3 stacked PRs, gated on the P2-0 decision)
+
+P2-0 decides whether payouts are a scenario, a separate panel, or a CLI-only teaching lane — or a documented blocked lane, in which case only the docs note lands.
+
+| PR | Subtask | Depends on |
+| --- | --- | --- |
+| P2-4.1 | Payout types, mock adapter support, redaction coverage for payout fields — before any UI. | P2-0 |
+| P2-4.2 | Smallest useful engine path: create/observe/report with clear evidence, no assumptions about settlement timing beyond observed sandbox behavior. *Sandbox lane holder for its live smoke.* | stacked on P2-4.1 |
+| P2-4.3 | UI: dedicated evidence card or wire-tab section — never overloading the charge lifecycle rail. | stacked on P2-4.2 |
 
 **Gate (me):** payout mock tests pass; one live smoke passes if permissions allow; otherwise docs explain the missing sandbox capability; secret scan covers payout fields.
 
-## P2-5 — Docs, dry runs, finalization
+## P2-5 — Docs, dry runs, finalization (1 PR + integrator checks)
 
-1. Update `docs/spec.md` with any P2 contract changes, webhook/payout deviations, and scenario behavior that differs from the original assumptions.
-2. Update README with P2 commands, webhook local testing instructions, replay controls, cURL copy safety notes, and artifact locations.
-3. Run full checks: `npm run typecheck`, `npm test`, `npm run check:secrets`, report parsing, and a replay-only smoke.
-4. Run live dry-runs in serial for all live-supported scenarios; keep webhook and payout live gates separate so a blocked external setup does not obscure scenario quality.
-5. Do a final review pass focused on redaction, event ordering, replay determinism, and UI clarity.
+One closing PR (spec/README/docs), then the check battery runs on `main`:
+
+1. Update `docs/spec.md` with P2 contract changes, resilience behavior (registry rehydration, interrupt semantics), webhook/payout deviations, and scenario behavior that differs from original assumptions.
+2. Update README with P2 commands, webhook local testing instructions, replay controls, cURL copy safety notes, artifact locations, and the accumulated "Deviations from spec".
+3. Full checks on `main`: `npm run typecheck`, `npm test`, `npm run check:secrets`, report parsing, and a replay-only smoke.
+4. Resilience drill re-run (the P2-R gate battery) on the final tree.
+5. Live dry-runs in serial for all live-supported scenarios; webhook and payout live gates stay separate so a blocked external setup does not obscure scenario quality.
+6. Final review pass (`/code-review` per merged area) focused on redaction, event ordering, replay determinism, and UI clarity.
 
 ## P2 acceptance checklist
+
+Delivery:
+
+- Every P2 subtask above merged to `main` via its own PR, squash-merged, with gate evidence in the PR body; `main` was green after every merge.
+- No PR touched files owned by another open PR; contract changes each landed as a dedicated `shared/` PR with synchronized fixtures.
+
+Resilience:
+
+- Server restart mid-session: registry rehydrates from `runs/*.jsonl`, dashboard shows prior runs as `partial`/completed correctly, clients recover via epoch reset.
+- `kill -9` and SIGINT drills leave valid JSONL prefixes and (for SIGINT) a parseable partial report with a non-zero exit code.
+- A transient sandbox outage during a poll loop delays a run instead of failing it, visibly, until the hard timeout.
+- SSE drops resume via `Last-Event-ID` or degrade to polling without event loss; a crashing UI pane never blanks the app.
+
+Features:
 
 - cURL copy is useful for learning but always redacted and placeholder-authenticated.
 - Replay can pause, seek, change speed, restart, and display partial recordings without corrupting the live event store.
 - Toasts announce offscreen state transitions without duplicates or visual overlap.
-- F/G/H/I are either live-supported with evidence or explicitly documented as mock/deviation cases.
-- Scenario H demonstrates hold and release with clear API exchanges, lifecycle states, and report evidence.
-- Webhooks are verified, redacted, correlated, deduped, persisted to `runs/*.jsonl`, replayable, and visible in the UI.
-- Polling still works when webhooks are absent, delayed, duplicated, or out of order.
+- F/G/H/I are either live-supported with evidence or explicitly documented as mock/deviation cases; Scenario H demonstrates hold and release with clear API exchanges, lifecycle states, and report evidence.
+- Webhooks are verified, redacted, correlated, deduped, persisted to `runs/*.jsonl`, replayable, and visible in the UI; polling still works when webhooks are absent, delayed, duplicated, or out of order.
 - Payouts ship only if API access and sandbox behavior are understood; otherwise they remain a documented blocked lane.
-- Final checks pass, and any spec/API drift is documented in the same change as the code.
+- Final checks pass, and any spec/API drift is documented in the same PR as the code.
 
 ## P2 risks
 
-- **Webhook ingress:** live webhook testing may require a public tunnel or Straddle dashboard configuration that is not available locally. Fixture and mock coverage should land first; live delivery can be a gated follow-up.
-- **Webhook signing uncertainty:** do not ship unauthenticated live webhook acceptance. If signing cannot be verified, keep the route local-only or fixture-only.
-- **Sandbox timing drift:** new scenario outcomes may have long or inconsistent status windows. Measure before adding them to Run All expectations.
-- **Payout permissions:** payout APIs may require account capabilities not present on the sandbox key.
-- **Contract churn:** webhooks and payouts may need new event/report shapes. Keep each contract edit small and synchronized across shared, server, web, fixtures, and docs.
+- **Stacked-PR churn:** a parent PR reworked under review forces rebases down the stack. Mitigation: stacks ≤2 deep, small PRs, contract PRs merged first and fast.
+- **Ownership drift:** parallel agents discovering they need the same file mid-wave. Mitigation: the ownership tables above are pre-partitioned per PR; the stop-and-repartition rule is mandatory, not advisory.
+- **Rehydration vs spec §3:** registry rehydration deliberately extends "in-memory registry" — the spec update ships inside P2-R.1 itself so code and spec never drift.
+- **Webhook ingress:** live webhook testing may require a public tunnel or Straddle dashboard configuration that is not available locally. Fixture and mock coverage land first; live delivery is a gated follow-up.
+- **Webhook signing uncertainty:** never ship unauthenticated live webhook acceptance. If signing cannot be verified, the route stays local-only/fixture-only behind an explicit flag.
+- **Sandbox timing drift:** new scenario outcomes may have long or inconsistent status windows. Measure in P2-0 before adding them to Run All expectations.
+- **Payout permissions:** payout APIs may require account capabilities not present on the sandbox key — the P2-0 go/no-go exists to catch this before any build spend.
+- **Contract churn:** webhooks and payouts may need new event/report shapes. Each contract edit is one small synchronized PR across shared, server, web, fixtures, and docs.
