@@ -205,6 +205,8 @@ describe("runner", () => {
         releaseCharge: (id, opts) => mock.releaseCharge(id, opts),
         cancelCharge: (id, opts) => mock.cancelCharge(id, opts),
         getCharge: (id) => mock.getCharge(id),
+        createPayout: (input) => mock.createPayout(input),
+        getPayout: (id) => mock.getPayout(id),
       };
     };
 
@@ -360,6 +362,8 @@ describe("runner", () => {
             }
             return mock.getCharge(id);
           },
+          createPayout: (input) => mock.createPayout(input),
+          getPayout: (id) => mock.getPayout(id),
         };
         return flaky;
       },

@@ -38,6 +38,38 @@ function chargeEnvelope(status: string): unknown {
   };
 }
 
+function payoutEnvelope(status: string): unknown {
+  return {
+    data: {
+      id: "pyt_123",
+      status,
+      status_history: [
+        {
+          status,
+          reason: "ok",
+          source: "system",
+          changed_at: "2026-07-08T12:00:00.000Z",
+        },
+      ],
+      amount: 5_000,
+      currency: "USD",
+      external_id: "run-20260708T120000Z-a-0001",
+      payment_date: "2026-07-08",
+      paykey: "abc***.01.******def", // masked server-side (like charges)
+      // Payout-only keys (api-notes §P13) — the DTO must tolerate these.
+      funding_ids: ["fund_1"],
+      is_refund: false,
+      is_resubmit: false,
+      has_resubmit: false,
+      trace_ids: ["trace_1"],
+      created_at: "2026-07-08T12:00:00.000Z",
+      updated_at: "2026-07-08T12:00:00.000Z",
+    },
+    meta: { api_request_id: "req-pyt" },
+    response_type: "object",
+  };
+}
+
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -170,6 +202,70 @@ describe("real client — charge actions (fetch adapter, no network)", () => {
       (e): e is ApiExchangeEvent => e.type === "api.exchange",
     );
     expect(puts.map((e) => e.status)).toEqual([500, 200]);
+  });
+
+  it("createPayout POSTs /v1/payouts with a payout body, forwards the idempotency key, and emits api.exchange", async () => {
+    const { client, calls, events } = harness([
+      jsonResponse(201, payoutEnvelope("created")),
+    ]);
+    const result = await client.createPayout({
+      paykey: `deadbeef.01.${"0".repeat(64)}`,
+      amount: 5_000,
+      currency: "USD",
+      description: "test payout",
+      device: { ip_address: "0.0.0.0" },
+      external_id: "run-20260708T120000Z-a-0001",
+      payment_date: "2026-07-08",
+      config: { sandbox_outcome: "paid" },
+      idempotencyKey: "run-payout-key-1",
+    });
+    expect(result.status).toBe("created");
+    // Payout-only keys survive the blanket DTO cast (tolerate extras).
+    expect(result.is_refund).toBe(false);
+    expect(result.funding_ids).toEqual(["fund_1"]);
+
+    expect(calls).toHaveLength(1);
+    const call = calls[0];
+    expect(call).toBeDefined();
+    if (call === undefined) return;
+    expect(call.method).toBe("POST");
+    expect(call.url).toBe("https://sandbox.straddle.io/v1/payouts");
+    const body = call.body as Record<string, unknown>;
+    expect(body["amount"]).toBe(5_000);
+    // Payout body OMITS charge-only fields and never carries idempotencyKey.
+    expect("consent_type" in body).toBe(false);
+    expect(
+      "balance_check" in ((body["config"] ?? {}) as Record<string, unknown>),
+    ).toBe(false);
+    expect("idempotencyKey" in body).toBe(false);
+    // The Idempotency-Key rides the HEADER (api-notes §P13 / §3).
+    expect(call.headers["Idempotency-Key"]).toBe("run-payout-key-1");
+    expect(call.headers["authorization"]).toBe("Bearer sk_sandbox_test_key");
+
+    const exchange = events.find(
+      (e): e is ApiExchangeEvent => e.type === "api.exchange",
+    );
+    expect(exchange).toMatchObject({
+      method: "POST",
+      path: "/v1/payouts",
+      status: 201,
+      attempt: 1,
+    });
+  });
+
+  it("getPayout GETs /v1/payouts/{id}", async () => {
+    const { client, calls, events } = harness([
+      jsonResponse(200, payoutEnvelope("paid")),
+    ]);
+    const result = await client.getPayout("pyt_123");
+    expect(result.status).toBe("paid");
+    expect(calls[0]?.method).toBe("GET");
+    expect(calls[0]?.url).toBe("https://sandbox.straddle.io/v1/payouts/pyt_123");
+    expect(
+      events.some(
+        (e) => e.type === "api.exchange" && e.path === "/v1/payouts/pyt_123",
+      ),
+    ).toBe(true);
   });
 
   it("throws StraddleApiError with the redacted body on a terminal-action 422", async () => {

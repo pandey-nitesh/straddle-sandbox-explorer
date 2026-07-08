@@ -668,3 +668,135 @@ describe("charge input guards (api-notes §8 constraints)", () => {
     expect(Array.isArray(body.error.items)).toBe(true);
   });
 });
+
+describe("payouts (P2-4 / api-notes §P13)", () => {
+  /** Runs customer -> paykey -> payout up to payout creation. */
+  async function createPayoutFlow(
+    client: StraddleClient,
+    runId: string,
+    outcome: ChargeSandboxOutcome = "paid",
+  ) {
+    const customer = await client.createCustomer({
+      name: "Pat Payout",
+      type: "individual",
+      email: "pat.payout@example.com",
+      phone: "+15555550199",
+      device: { ip_address: "0.0.0.0" },
+      config: { sandbox_outcome: "verified" },
+      external_id: runId,
+    });
+    const paykey = await client.createPaykey({
+      customer_id: customer.id,
+      routing_number: SEEDED_BANK.routing_number,
+      account_number: SEEDED_BANK.preferred_account_number,
+      account_type: "checking",
+    });
+    const payout = await client.createPayout({
+      paykey: paykey.paykey,
+      amount: 5_000,
+      currency: "USD",
+      description: "mock payout",
+      device: { ip_address: "0.0.0.0" },
+      external_id: runId,
+      payment_date: "2026-07-07",
+      config: { sandbox_outcome: outcome },
+    });
+    return { payout, rawToken: paykey.paykey };
+  }
+
+  it("createPayout returns a created payout; getPayout advances to terminal paid on the clock", async () => {
+    const { clock, client, runId } = makeHarness("a");
+    const { payout } = await createPayoutFlow(client, runId, "paid");
+    expect(payout.status).toBe("created");
+    expect(payout.id).toMatch(/^mock-payout-/);
+    expect(payout.external_id).toBe(runId);
+    // Payout-only keys are present and tolerated (api-notes §P13).
+    expect(payout.is_refund).toBe(false);
+    expect(payout.is_resubmit).toBe(false);
+    expect(payout.has_resubmit).toBe(false);
+    expect(Array.isArray(payout.funding_ids)).toBe(true);
+    // The paykey is MASKED in the response (like charges), not the raw token.
+    expect(payout.paykey).not.toMatch(/^[0-9a-f]{8}\.\d{2}\.[0-9a-f]{64}$/);
+
+    await clock.advance(600_000);
+    const final = await client.getPayout(payout.id);
+    expect(final.status).toBe("paid");
+    expect(final.status_history.map((h) => h.status)).toEqual([
+      "created",
+      "scheduled",
+      "pending",
+      "paid",
+    ]);
+    expect(final.status_details?.code).toBeUndefined(); // paid carries no code
+  });
+
+  it("emits POST /v1/payouts and GET /v1/payouts/{id} with a payout body (no balance_check/consent_type) and zero credential survival", async () => {
+    const { clock, client, events, runId } = makeHarness("a");
+    const { payout, rawToken } = await createPayoutFlow(client, runId, "paid");
+    await clock.advance(200_000);
+    await client.getPayout(payout.id);
+
+    const exchanges = events.filter(
+      (e): e is ApiExchangeEvent => e.type === "api.exchange",
+    );
+    const create = exchanges.find(
+      (e) => e.method === "POST" && e.path === "/v1/payouts",
+    );
+    expect(create).toBeDefined();
+    expect(
+      exchanges.some(
+        (e) => e.method === "GET" && e.path === `/v1/payouts/${payout.id}`,
+      ),
+    ).toBe(true);
+
+    // Payout create body: no charge-only fields.
+    const body = create?.request_body as Record<string, unknown> | undefined;
+    expect(body).toBeDefined();
+    expect("consent_type" in (body ?? {})).toBe(false);
+    const cfg = (body?.config ?? {}) as Record<string, unknown>;
+    expect("balance_check" in cfg).toBe(false);
+
+    // Zero-survival: the raw paykey token and seeded bank canaries never appear.
+    const serialized = JSON.stringify(events);
+    expect(serialized).not.toContain(rawToken);
+    expect(serialized).not.toContain(SEEDED_BANK.routing_number);
+    expect(serialized).not.toContain(SEEDED_BANK.preferred_account_number);
+    expect(serialized).not.toMatch(/[0-9a-f]{8}\.\d{2}\.[0-9a-f]{64}/);
+  });
+
+  it("createPayout for an unknown paykey token → 422; getPayout for a missing id → 404", async () => {
+    const { client, runId } = makeHarness("a");
+    await expect(
+      client.createPayout({
+        paykey: "not-a-real-token",
+        amount: 1_000,
+        currency: "USD",
+        description: "bad token",
+        device: { ip_address: "0.0.0.0" },
+        external_id: runId,
+        payment_date: "2026-07-07",
+      }),
+    ).rejects.toMatchObject({ status: 422, retryable: false });
+
+    await expect(client.getPayout("mock-payout-missing")).rejects.toMatchObject({
+      status: 404,
+    });
+  });
+
+  it("rejects a duplicate payout external_id with 422", async () => {
+    const { client, runId } = makeHarness("a");
+    const { rawToken } = await createPayoutFlow(client, runId, "paid");
+    // Reusing the same external_id on a second payout with the same paykey.
+    await expect(
+      client.createPayout({
+        paykey: rawToken,
+        amount: 5_000,
+        currency: "USD",
+        description: "duplicate external_id",
+        device: { ip_address: "0.0.0.0" },
+        external_id: runId,
+        payment_date: "2026-07-07",
+      }),
+    ).rejects.toMatchObject({ status: 422 });
+  });
+});

@@ -16,6 +16,8 @@ import type {
   HealthResult,
   PaykeyInput,
   PaykeyResult,
+  PayoutInput,
+  PayoutResult,
   StraddleClient,
 } from "./types.js";
 
@@ -156,6 +158,29 @@ class FetchStraddleClient implements StraddleClient {
   async getCharge(chargeId: string): Promise<ChargeResult> {
     const envelope = await this.request<JsonObject>("GET", `/v1/charges/${chargeId}`);
     return dataOf(envelope) as unknown as ChargeResult;
+  }
+
+  /**
+   * POST /v1/payouts (api-notes §P13). Body OMITS balance_check and consent_type
+   * (charges-only). The `Idempotency-Key` is caller-supplied (payoutInput sends
+   * a UUID); like createCharge, this method does not auto-generate one. The
+   * shared request() path handles `api.exchange` per attempt, redaction-before-
+   * construct, and retry/backoff. The blanket cast tolerates the payout-only
+   * response keys (funding_ids/is_refund/is_resubmit/has_resubmit/trace_ids).
+   */
+  async createPayout(input: PayoutInput): Promise<PayoutResult> {
+    const envelope = await this.request<JsonObject>(
+      "POST",
+      "/v1/payouts",
+      bodyWithoutIdempotency(input),
+      { idempotencyKey: input.idempotencyKey },
+    );
+    return dataOf(envelope) as unknown as PayoutResult;
+  }
+
+  async getPayout(payoutId: string): Promise<PayoutResult> {
+    const envelope = await this.request<JsonObject>("GET", `/v1/payouts/${payoutId}`);
+    return dataOf(envelope) as unknown as PayoutResult;
   }
 
   async holdCharge(

@@ -72,7 +72,7 @@ export interface RunSuiteResult {
   interrupted: boolean;
 }
 
-interface ScenarioEvidence {
+export interface ScenarioEvidence {
   transitions: StatusTransition[];
   identityReview?: IdentityReviewSummary;
   refusal?: ApiRefusal;
@@ -293,7 +293,7 @@ async function captureExpectedRefusal(
 }
 
 /** The subset of a run's context the poll/action helpers need. */
-interface PollableArgs {
+export interface PollableArgs {
   scenario: RunnableScenarioDef;
   run_id: string;
   bus: EventBus;
@@ -347,12 +347,21 @@ async function runManualCancel(
   await pollCharge(args, evidence, client, cancelled);
 }
 
-async function pollCharge(
+export async function pollCharge(
   args: PollableArgs,
   evidence: ScenarioEvidence,
   client: StraddleClient,
   initial: ChargeResult,
-  opts?: { isSettled?: (charge: ChargeResult) => boolean },
+  opts?: {
+    isSettled?: (charge: ChargeResult) => boolean;
+    /**
+     * Override the per-cycle fetch. Defaults to `client.getCharge(initial.id)`.
+     * The payout lane (P2-4) passes `() => client.getPayout(id)` — a PayoutResult
+     * is structurally assignable to ChargeResult (same id/status/status_history),
+     * so the poll/observe machinery is reused verbatim.
+     */
+    fetch?: () => Promise<ChargeResult>;
+  },
 ): Promise<void> {
   // Poll-level retry counter (P2-R.3): the failed fetch is attempt 1, so the
   // retry.scheduled events start at 2 (RetryScheduledEventSchema requires >=2).
@@ -362,7 +371,7 @@ async function pollCharge(
       clock: args.clock,
       scheduler: args.scheduler,
       policy: args.pollPolicy,
-      fetch: () => client.getCharge(initial.id),
+      fetch: opts?.fetch ?? (() => client.getCharge(initial.id)),
       onObservation: (charge) => observeCharge(args, evidence, charge),
       statusOf: (charge) => charge.status,
       switchToFast: (charge) =>
@@ -407,7 +416,7 @@ async function pollCharge(
   }
 }
 
-function observeCharge(
+export function observeCharge(
   args: { bus: EventBus; run_id: string; scenario: RunnableScenarioDef },
   evidence: ScenarioEvidence,
   charge: ChargeResult,
@@ -449,7 +458,7 @@ function observeCharge(
   }
 }
 
-function completeRun(
+export function completeRun(
   args: {
     scenario: RunnableScenarioDef;
     run_id: string;
@@ -495,7 +504,7 @@ function isChargeSettled(
   return TERMINAL_CHARGE_STATUSES.has(charge.status);
 }
 
-function customerInput(scenario: RunnableScenarioDef, runId: string) {
+export function customerInput(scenario: RunnableScenarioDef, runId: string) {
   const profile = fakeCustomerProfile(scenario.id, runId);
   return {
     name: profile.name,
@@ -538,7 +547,7 @@ function seedFromRun(scenarioId: RunnableScenarioId, runId: string): number {
     .readUInt32BE(0);
 }
 
-function paykeyInput(
+export function paykeyInput(
   customer: CustomerResult,
   scenario: RunnableScenarioDef,
   runId: string,
@@ -601,7 +610,7 @@ export function randomAccountNumber(): string {
   }
 }
 
-function makeRunId(scenarioId: RunnableScenarioId, clock: Clock): string {
+export function makeRunId(scenarioId: RunnableScenarioId, clock: Clock): string {
   const stamp = new Date(clock.now()).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
   return `run-${stamp}-${scenarioId}-${randomBytes(2).toString("hex")}`;
 }

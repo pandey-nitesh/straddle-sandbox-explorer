@@ -16,6 +16,8 @@ import type {
   HealthResult,
   PaykeyInput,
   PaykeyResult,
+  PayoutInput,
+  PayoutResult,
   StraddleClient,
 } from "./types.js";
 
@@ -81,6 +83,38 @@ const charge: ChargeResult = {
   updated_at: "2026-07-07T06:27:35.0000000Z",
 };
 
+const payout: PayoutResult = {
+  id: "0197e5b3-0000-7000-8000-fakepyt00001",
+  status: "paid",
+  status_history: [
+    {
+      status: "created",
+      reason: "ok",
+      source: "system",
+      changed_at: "2026-07-07T06:21:46.0000000Z",
+    },
+    {
+      status: "paid",
+      reason: "ok",
+      source: "system",
+      changed_at: "2026-07-07T06:23:43.0000000Z",
+    },
+  ],
+  amount: 5000,
+  currency: "USD",
+  external_id: "run-20260707T062143Z-a-0001",
+  payment_date: "2026-07-07",
+  paykey: "deadbeef***.01.******000", // masked in the response, like charges
+  // Payout-only keys (api-notes §P13) — tolerated, non-sensitive.
+  funding_ids: ["fund_fake_0001"],
+  is_refund: false,
+  is_resubmit: false,
+  has_resubmit: false,
+  trace_ids: ["trace_fake_0001"],
+  created_at: "2026-07-07T06:21:46.0000000Z",
+  updated_at: "2026-07-07T06:23:43.0000000Z",
+};
+
 /** The interface must be implementable without SDK types. */
 const fakeClient: StraddleClient = {
   async health(): Promise<HealthResult> {
@@ -119,6 +153,12 @@ const fakeClient: StraddleClient = {
   },
   async cancelCharge(_chargeId: string): Promise<ChargeResult> {
     return charge;
+  },
+  async createPayout(_input: PayoutInput): Promise<PayoutResult> {
+    return payout;
+  },
+  async getPayout(_payoutId: string): Promise<PayoutResult> {
+    return payout;
   },
 };
 
@@ -162,6 +202,38 @@ describe("StraddleClient boundary types", () => {
     // Scenario B's evaluator recipe: source + code, never reason alone.
     expect(result.status_details?.source).toBe("bank_decline");
     expect(result.status_details?.code).toBe("R01");
+  });
+
+  it("payout input omits balance_check/consent_type; result is charge-shaped (api-notes §P13)", async () => {
+    const input: PayoutInput = {
+      paykey: paykey.paykey, // token, not paykey.id
+      amount: 5000,
+      currency: "USD",
+      description: "Sandbox payout",
+      device: { ip_address: "0.0.0.0" },
+      external_id: "run-20260707T062143Z-a-0001",
+      payment_date: "2026-07-07",
+      config: { sandbox_outcome: "paid" },
+      idempotencyKey: "run-20260707T062143Z-a-0001-create_payout",
+    };
+    // The payout body has no charge-only fields. (Compile-level proof: adding
+    // `consent_type` or `config.balance_check` here would be a type error.)
+    expect("consent_type" in input).toBe(false);
+    expect("balance_check" in input.config!).toBe(false);
+
+    const created = await fakeClient.createPayout(input);
+    expect(created.status).toBe("paid");
+    // Charge-shaped result reuses the charge status_history shape.
+    expect(created.status_history.map((h) => h.status)).toEqual([
+      "created",
+      "paid",
+    ]);
+    // Payout-only keys are present and tolerated.
+    expect(created.is_refund).toBe(false);
+    expect(created.funding_ids).toEqual(["fund_fake_0001"]);
+
+    const fetched = await fakeClient.getPayout(created.id);
+    expect(fetched.id).toBe(payout.id);
   });
 
   it("status strings tolerate unknown enum values (extensible by rule)", () => {
