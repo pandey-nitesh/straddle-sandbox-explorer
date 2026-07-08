@@ -54,6 +54,73 @@ describe("poller", () => {
     expect(caught).toMatchObject({ elapsedMs: 25, lastStatus: "pending" });
   });
 
+  it("treats a retryable fetch error as a missed observation and keeps polling", async () => {
+    const clock = new FakeClock(0);
+    let calls = 0;
+    const seen: string[] = [];
+    const task = poll({
+      clock,
+      policy: { baseMinMs: 10, baseMaxMs: 10, fastMs: 10, hardTimeoutMs: 1_000 },
+      fetch: async () => {
+        calls += 1;
+        if (calls <= 2) throw { status: 503, path: "/v1/charges", retryable: true, errorBody: {} };
+        return { status: "paid" };
+      },
+      onFetchError: (error) =>
+        (error as { retryable?: boolean }).retryable === true ? "retry" : "fail",
+      isSettled: (value) => value.status === "paid",
+      onObservation: (value) => {
+        seen.push(value.status);
+      },
+      statusOf: (value) => value.status,
+    });
+
+    await clock.advance(1_000);
+    await expect(task).resolves.toEqual({ status: "paid" });
+    expect(calls).toBe(3); // two transient failures, then success
+    expect(seen).toEqual(["paid"]); // only the successful fetch is an observation
+  });
+
+  it("rethrows a non-retryable fetch error immediately", async () => {
+    const clock = new FakeClock(0);
+    let calls = 0;
+    const task = poll({
+      clock,
+      policy: { baseMinMs: 10, baseMaxMs: 10, fastMs: 10, hardTimeoutMs: 1_000 },
+      fetch: async () => {
+        calls += 1;
+        throw { status: 404, path: "/v1/charges", retryable: false, errorBody: {} };
+      },
+      onFetchError: (error) =>
+        (error as { retryable?: boolean }).retryable === true ? "retry" : "fail",
+      isSettled: () => true,
+      onObservation: () => undefined,
+      statusOf: () => undefined,
+    }).catch((error: unknown) => error);
+
+    await clock.advance(50);
+    expect(await task).toMatchObject({ status: 404 });
+    expect(calls).toBe(1); // failed once, did not keep polling
+  });
+
+  it("hard-times-out when a transient error never clears", async () => {
+    const clock = new FakeClock(0);
+    const task = poll({
+      clock,
+      policy: { baseMinMs: 10, baseMaxMs: 10, fastMs: 10, hardTimeoutMs: 35 },
+      fetch: async () => {
+        throw { status: 503, path: "/v1/charges", retryable: true, errorBody: {} };
+      },
+      onFetchError: () => "retry",
+      isSettled: () => true,
+      onObservation: () => undefined,
+      statusOf: () => undefined,
+    }).catch((error: unknown) => error);
+
+    await clock.advance(100);
+    expect(await task).toBeInstanceOf(PollTimeoutError);
+  });
+
   it("enforces a process-wide minimum gap between request starts", async () => {
     const clock = new FakeClock(1000);
     const scheduler = new RateFloorScheduler(clock, 250);

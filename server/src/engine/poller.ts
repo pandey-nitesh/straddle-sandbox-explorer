@@ -50,6 +50,9 @@ export class RateFloorScheduler {
   }
 }
 
+/** What the poller does with an error thrown by `fetch` (P2-R.3). */
+export type FetchErrorDecision = "retry" | "fail";
+
 export interface PollArgs<T> {
   fetch: () => Promise<T>;
   isSettled: (value: T, observations: T[]) => boolean;
@@ -60,6 +63,18 @@ export interface PollArgs<T> {
   onObservation: (value: T) => Promise<void> | void;
   statusOf?: (value: T) => string | undefined;
   random?: () => number;
+  /**
+   * Classify an error thrown by `fetch` (P2-R.3). "retry" treats it as a
+   * MISSED observation — the loop keeps polling (still bounded by the hard
+   * timeout), so a transient sandbox blip can't kill a long run. "fail"
+   * rethrows immediately. Absent → "fail" (the pre-P2-R.3 behavior: any fetch
+   * error aborts the poll). The poller stays generic over `T`; the caller owns
+   * the retryable-vs-terminal decision and any diagnostic it wants to emit.
+   */
+  onFetchError?: (
+    error: unknown,
+    context: { elapsedMs: number; nextDelayMs: number },
+  ) => FetchErrorDecision;
 }
 
 export async function poll<T>(args: PollArgs<T>): Promise<T> {
@@ -85,7 +100,23 @@ export async function poll<T>(args: PollArgs<T>): Promise<T> {
     await args.clock.sleep(Math.min(delay, policy.hardTimeoutMs - elapsedBeforeSleep));
 
     if (args.scheduler !== undefined) await args.scheduler.waitTurn();
-    const value = await args.fetch();
+
+    let value: T;
+    try {
+      value = await args.fetch();
+    } catch (error) {
+      const decision =
+        args.onFetchError?.(error, {
+          elapsedMs: args.clock.now() - start,
+          nextDelayMs: fastLatched ? policy.fastMs : policy.baseMinMs,
+        }) ?? "fail";
+      if (decision === "fail") throw error;
+      // Missed observation: skip this cycle and keep polling. The loop-top
+      // hard-timeout check still bounds the total wait, so a transient outage
+      // delays the run and eventually fails at the timeout rather than dying
+      // on the first blip.
+      continue;
+    }
     last = value;
     observations.push(value);
     await args.onObservation(value);

@@ -41,6 +41,34 @@ export function recordingPathFor(dir: string, runId: string): string {
   return path.join(dir, `${runId}.jsonl`);
 }
 
+export interface RecorderWriteFailure {
+  /** The run whose event could not be written. */
+  runId: string;
+  /** The underlying error from the final failed write attempt. */
+  error: unknown;
+  /** True when a retry (after recreating the directory) succeeded. */
+  recovered: boolean;
+}
+
+export interface RecorderOptions {
+  /**
+   * Notified on every write failure (P2-R.3), recovered or not. Default logs a
+   * warning to stderr. Deliberately NOT emitted onto the bus: a broken disk
+   * can't record the diagnostic event either, and re-emitting would recurse
+   * through this same subscriber. The incomplete file self-classifies as
+   * `partial` on the next boot rehydration (P2-R.1) instead.
+   */
+  onWriteError?: (failure: RecorderWriteFailure) => void;
+  /**
+   * Append one line to a file (injectable for fault-injection tests). Default
+   * is a single synchronous, atomic `appendFileSync` — no user-space buffer, so
+   * a crash between events leaves a valid prefix (spec §11).
+   */
+  appendLine?: (file: string, line: string) => void;
+  /** Ensure `dir` exists (injectable). Default `mkdirSync(dir, recursive)`. */
+  ensureDir?: (dir: string) => void;
+}
+
 export interface RecorderHandle {
   /** Unsubscribe from the bus — no writes after this returns. */
   detach(): void;
@@ -50,32 +78,73 @@ export interface RecorderHandle {
    * instant an `emit` returns, so `flush` resolves immediately — its value is
    * making the guarantee EXPLICIT: a graceful shutdown awaits it before writing
    * a final report and exiting, rather than relying on the invariant
-   * incidentally. (P2-R.3 extends the recorder with failure handling behind
-   * this same handle.)
+   * incidentally.
    */
   flush(): Promise<void>;
+  /**
+   * Runs whose recording suffered an unrecoverable write failure (P2-R.3) and
+   * is therefore incomplete/unreliable. Empty on the happy path.
+   */
+  failedRuns(): Set<string>;
+}
+
+function defaultOnWriteError(failure: RecorderWriteFailure): void {
+  const detail =
+    failure.error instanceof Error ? failure.error.message : String(failure.error);
+  // eslint-disable-next-line no-console
+  console.error(
+    failure.recovered
+      ? `recorder: recovered a write failure for ${failure.runId} (${detail})`
+      : `recorder: UNRECOVERABLE write failure for ${failure.runId}; recording is incomplete (${detail})`,
+  );
 }
 
 /**
- * Subscribes a JSONL recorder to the bus and returns a handle (detach + flush).
- * Creates `dir` (recursively) if absent at attach time.
+ * Subscribes a JSONL recorder to the bus and returns a handle
+ * (detach + flush + failedRuns). Creates `dir` (recursively) if absent.
  *
- * Recorder write failures (disk full, dir removed mid-run) throw from the
- * subscriber and are handled by the bus's subscriber-isolation policy — they
- * are reported via `onSubscriberError` and never break other subscribers.
+ * Fault tolerance (P2-R.3): a failed append first triggers a single recovery
+ * attempt — recreate the directory (it may have been removed mid-run) and retry
+ * — because a transient disk/dir blip must not kill a 10-minute run. If that
+ * also fails the recorder NEVER throws (the process survives, other bus
+ * subscribers are unaffected), marks the run's recording unreliable, and routes
+ * the failure to `onWriteError`. Atomicity of the append still guarantees no
+ * partial line is ever written (spec §11).
  */
-export function createRecorder(bus: EventBus, dir: string): RecorderHandle {
-  mkdirSync(dir, { recursive: true });
+export function createRecorder(
+  bus: EventBus,
+  dir: string,
+  options: RecorderOptions = {},
+): RecorderHandle {
+  const appendLine =
+    options.appendLine ?? ((file, line) => appendFileSync(file, line, "utf8"));
+  const ensureDir = options.ensureDir ?? ((d) => mkdirSync(d, { recursive: true }));
+  const onWriteError = options.onWriteError ?? defaultOnWriteError;
+  const failedRuns = new Set<string>();
+
+  ensureDir(dir);
+
   const detach = bus.subscribe((event: RunEvent) => {
-    appendFileSync(
-      recordingPathFor(dir, event.run_id),
-      `${JSON.stringify(event)}\n`,
-      "utf8",
-    );
+    const file = recordingPathFor(dir, event.run_id);
+    const line = `${JSON.stringify(event)}\n`;
+    try {
+      appendLine(file, line);
+    } catch (firstError) {
+      try {
+        ensureDir(dir); // recover the common case: the directory was removed
+        appendLine(file, line);
+        onWriteError({ runId: event.run_id, error: firstError, recovered: true });
+      } catch (secondError) {
+        failedRuns.add(event.run_id);
+        onWriteError({ runId: event.run_id, error: secondError, recovered: false });
+      }
+    }
   });
+
   return {
     detach,
     flush: () => Promise.resolve(),
+    failedRuns: () => new Set(failedRuns),
   };
 }
 

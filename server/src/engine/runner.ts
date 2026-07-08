@@ -298,6 +298,9 @@ async function pollCharge(
   client: StraddleClient,
   initial: ChargeResult,
 ): Promise<void> {
+  // Poll-level retry counter (P2-R.3): the failed fetch is attempt 1, so the
+  // retry.scheduled events start at 2 (RetryScheduledEventSchema requires >=2).
+  let pollAttempt = 1;
   try {
     await poll({
       clock: args.clock,
@@ -309,6 +312,31 @@ async function pollCharge(
       switchToFast: (charge) =>
         args.scenario.id === "c" && charge.status_history.some((h) => h.status === "pending"),
       isSettled: (charge) => isChargeSettled(args.scenario, charge, evidence.transitions),
+      onFetchError: (error, context) => {
+        // Only a RETRYABLE-exhausted Straddle error (429/5xx the client already
+        // retried) is a transient blip we poll through; anything else (404,
+        // other 4xx, non-API error) ends the poll and is recorded below.
+        const apiError =
+          isStraddleApiError(error) || hasMockApiErrorShape(error) ? error : undefined;
+        if (apiError?.retryable !== true) return "fail";
+        pollAttempt += 1;
+        // A transient blip we poll THROUGH is not a failure, so it does NOT go
+        // in evidence.diagnostics (the evaluator treats any diagnostic as a
+        // failure). It stays visible as a retry.scheduled event in the wire log.
+        // Only if the blip never clears does the eventual hard timeout add a
+        // failure diagnostic below.
+        args.bus.emit({
+          type: "retry.scheduled",
+          run_id: args.run_id,
+          scenario_id: args.scenario.id,
+          path: apiError.path,
+          status: apiError.status,
+          error_class: error instanceof Error ? error.name : "unknown",
+          attempt: pollAttempt,
+          delay_ms: context.nextDelayMs,
+        });
+        return "retry";
+      },
     });
   } catch (error) {
     if (error instanceof Error) {
