@@ -36,6 +36,13 @@ export const DEFAULT_PORT = 8787;
 export const ENV_VARS = {
   apiKey: "STRADDLE_API_KEY",
   port: "PORT",
+  /** Optional Svix/Standard-Webhooks signing secret (`whsec_…`; api-notes §P12). */
+  webhookSecret: "STRADDLE_WEBHOOK_SECRET",
+  /**
+   * Fixture/local-only flag (P2-3.2): when truthy AND no secret is configured,
+   * the receiver accepts unsigned payloads marked unverified. Default off.
+   */
+  allowUnsignedWebhooks: "WEBHOOK_ALLOW_UNSIGNED",
 } as const;
 
 /**
@@ -68,6 +75,23 @@ export interface Config {
   readonly sandboxBaseUrl: typeof SANDBOX_BASE_URL;
   /** Tests-only poll-policy overrides; keys absent when the env var is unset. */
   readonly pollPolicyOverrides: PollPolicyOverrides;
+  /**
+   * The raw `STRADDLE_WEBHOOK_SECRET` (`whsec_…`), or undefined when absent.
+   * Non-enumerable and handled exactly like {@link straddleApiKey}: invisible
+   * to JSON.stringify, util.inspect, spread, and Object.keys. Read it
+   * explicitly, hand it only to the webhook verifier, and never log it
+   * (api-notes §P12 redaction impact).
+   */
+  readonly straddleWebhookSecret: string | undefined;
+  /** True iff a non-blank STRADDLE_WEBHOOK_SECRET was found (env or .env). */
+  readonly webhookSecretPresent: boolean;
+  /**
+   * Fixture/local-only escape hatch (WEBHOOK_ALLOW_UNSIGNED). When true AND no
+   * secret is configured, the receiver accepts unsigned payloads marked
+   * unverified. It NEVER weakens signed mode; default false — never accept an
+   * unsigned LIVE webhook (spec P2-3 risk, api-notes §P12).
+   */
+  readonly allowUnsignedWebhooks: boolean;
 }
 
 /** Thrown for malformed configuration values. Never echoes the API key. */
@@ -150,6 +174,12 @@ function parsePositiveInt(
   return value;
 }
 
+/** Truthy flag parser for boolean env vars: 1/true/yes/on (case-insensitive). */
+function parseBoolFlag(raw: string | undefined): boolean {
+  if (raw === undefined) return false;
+  return ["1", "true", "yes", "on"].includes(raw.trim().toLowerCase());
+}
+
 export interface LoadConfigOptions {
   /** Environment view to read (default: process.env). Tests inject this. */
   env?: EnvView;
@@ -195,11 +225,20 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     });
   }
 
+  const rawWebhookSecret = get(ENV_VARS.webhookSecret);
+  const webhookSecret =
+    rawWebhookSecret !== undefined && rawWebhookSecret.trim() !== ""
+      ? rawWebhookSecret.trim()
+      : undefined;
+  const allowUnsignedWebhooks = parseBoolFlag(get(ENV_VARS.allowUnsignedWebhooks));
+
   const config = {
     keyPresent: apiKey !== undefined,
     port,
     sandboxBaseUrl: SANDBOX_BASE_URL,
     pollPolicyOverrides,
+    webhookSecretPresent: webhookSecret !== undefined,
+    allowUnsignedWebhooks,
   };
 
   // The key is attached as a NON-ENUMERABLE property so it cannot leak via
@@ -211,9 +250,18 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     writable: false,
     configurable: false,
   });
+  // The webhook signing secret gets identical non-enumerable treatment — it is
+  // key material (api-notes §P12) and must never leak via inspect/stringify.
+  Object.defineProperty(config, "straddleWebhookSecret", {
+    value: webhookSecret,
+    enumerable: false,
+    writable: false,
+    configurable: false,
+  });
   const safeView = (): Record<string, unknown> => ({
     ...config,
     straddleApiKey: apiKey === undefined ? undefined : "[REDACTED]",
+    straddleWebhookSecret: webhookSecret === undefined ? undefined : "[REDACTED]",
   });
   Object.defineProperty(config, "toJSON", {
     value: safeView,

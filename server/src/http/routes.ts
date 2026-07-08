@@ -12,6 +12,7 @@ import { createMockStraddleClient } from "../straddle/mock.js";
 import { createStraddleClient } from "../straddle/client.js";
 import type { Clock, StraddleClient } from "../straddle/types.js";
 import { SSE_HEARTBEAT_MS, resolveResumePoint, sseComment, sseFrame } from "./sse.js";
+import { registerWebhookRoutes } from "./webhooks.js";
 
 export interface RegisterRoutesOptions {
   epoch: string;
@@ -173,6 +174,10 @@ export async function registerRoutes(
       return reply.type("application/x-ndjson").send(createReadStream(file));
     },
   );
+
+  // Inbound webhook receiver + inbox (P2-3.2). Encapsulated so its raw-body
+  // content-type parser does not affect the JSON routes above.
+  await registerWebhookRoutes(app, { config: options.config });
 
   app.get<{ Querystring: { since?: string; once?: string } }>(
     "/api/events/stream",
