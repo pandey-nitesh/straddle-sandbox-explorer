@@ -485,6 +485,36 @@ constants (`021000021`, `123456789`, `987654321`) from `shared/src/constants.ts`
     `sandbox.straddle.io` (both work) — always pass `baseURL` explicitly (§1).
 17. **DTOs must tolerate unknown response fields** — GET charges return fields absent from SDK
     types (§4).
+18. **R02 (ClosedBankAccount) ALSO poisons the seeded account — extends §12 item 2 / spec §18.2**
+    which documented only R05 and asserted "R01 returns do not poison." A settled
+    `failed_closed_bank_account` (R02) blocks new paykey creation on that routing+account with 422
+    "…blocked due to return code R02 (ClosedBankAccount)…". As a result **both** documented seeded
+    accounts are now blocked (`123456789`=R05, `987654321`=R02). VERIFIED escape: **arbitrary
+    (never-seeded) account numbers create working paykeys** — the outcome is forced by
+    `sandbox_outcome`, account-independent. Recommendation (a code change, not this docs PR):
+    generate a random per-run account number with routing `021000021` instead of the shared
+    `SEEDED_BANK.preferred_account_number`; this sidesteps R02/R05 poisoning AND unblocks the live
+    A–E suite, which otherwise 422s on paykey create until the block expires. See §P14. (Duration of
+    the R02 block UNVERIFIED; R05 persisted ≥6 h.)
+19. **Manual `PUT /cancel` yields a real `cancelled` status** — spec §18.8's "no observed sandbox
+    path yields `cancelled`" holds only for `sandbox_outcome` forcing; the cancel *action verb*
+    produces a genuine terminal `cancelled` (reason `user_request`, source `user_action`). Enables a
+    true-`cancelled` teaching scenario and could strengthen Scenario D. See §P11.
+20. **Charge action endpoints verified live** (hold/release/cancel), not just SDK-source — see §P11.
+    Notable: release resumes to `created` (not `paid`); release on a not-held charge is a 200
+    no-op; any action on a terminal charge → 422; two mutations in quick succession on one charge
+    can return a transient **500 "Concurrency error for AggregateEventFields"** (retryable).
+21. **Payouts are available on this sandbox key** — POST `/v1/payouts` → 201 (spec treated payouts
+    as an unprobed P2 lane). No `config.balance_check` and no `consent_type` (charges-only);
+    `sandbox_outcome`/`status`/`source` enums identical to charges. Payout lifecycle timing
+    UNMEASURED. See §P13.
+22. **Inbound webhooks are Svix / Standard Webhooks and dashboard-configured** — there is no
+    webhook-management API on `sandbox.straddle.io` (all guesses return a router HTML 404). Signing
+    uses headers `webhook-id` / `webhook-timestamp` / `webhook-signature` (HMAC-SHA256 over
+    `id.timestamp.rawBody`, `whsec_`-prefixed base64 secret). Charge reversals are delivered via the
+    generic `charge.event.v1`, not a dedicated event. Live delivery/verification is UNVERIFIED
+    without dashboard endpoint config + a public tunnel. See §P12; resolves spec §18.1's
+    "webhook-only reversal" question only partially (path exists; sandbox emission unconfirmed).
 
 ## 13. 15-minute Run All budget arithmetic
 
@@ -509,6 +539,165 @@ paid→reversed behavior ever materializes, C grows by the reversal window (~4 m
 
 Serial CLI execution (P1) would sum to ~16 min worst case — over budget; concurrency is
 load-bearing, as the spec already assumes.
+
+---
+
+## P2 API truth refresh (2026-07-08)
+
+Second live pass for the P2 lanes (charge actions, F/G/I scenarios, webhooks, payouts). Same
+legend and discipline as above; all live evidence in `spike/captures/` (gitignored). Per-topic
+scratch notes in `spike/notes/p2-*.md`. New deviations are folded into §12 (items 18–22). SDK facts
+are read from `@straddlecom/straddle@0.3.0` types/source (the package is installed); everything
+marked OBSERVED was exercised against `sandbox.straddle.io` this pass.
+
+### P11. Charge action endpoints (hold / release / cancel) — OBSERVED
+
+All three are **PUT** (confirmed from SDK source AND exercised live). Body is
+`{ "reason"?: string | null }` — **optional** (empty `{}` accepted). `Idempotency-Key` accepted
+(UUID). The user-supplied `reason` is echoed verbatim into `status_details.message`.
+
+| Action | Path | From-state → result |
+| --- | --- | --- |
+| hold | `PUT /v1/charges/{id}/hold` | `created`/`scheduled` → **`on_hold`** (reason `user_request`, source `user_action`) — 200 |
+| release | `PUT /v1/charges/{id}/release` | `on_hold` → **`created`** (RESUMES the pipeline, NOT straight to `paid`) — 200 |
+| release | `PUT /v1/charges/{id}/release` | `created` (not held) → **200 no-op** (status unchanged) — not an error |
+| cancel | `PUT /v1/charges/{id}/cancel` | `created` → **`cancelled`** (reason `user_request`, source `user_action`) — 200 |
+| cancel | `PUT /v1/charges/{id}/cancel` | `on_hold` → **`cancelled`** (history `created → on_hold → cancelled`) — 200 |
+| any | hold/release/cancel | on a **terminal** charge → **422** `"Unable to change status of a cancelled payment."` |
+
+- **Two ways to reach `on_hold`:** (a) the manual `hold` action above, and (b) the
+  `sandbox_outcome: "on_hold_daily_limit"` charge, which lands an **automatic** `on_hold` (reason
+  `amount_too_large`, source `watchtower`, no code, message *"Held for sandbox simulation of amount
+  being above daily limit."*). `release` works on the watchtower-held charge too (→ `created`).
+- **Transient 500 concurrency error:** firing two mutations back-to-back on the same charge
+  (cancel immediately after hold) returned **`500` `{error:{... detail:"Concurrency error for
+  AggregateEventFields - <id>"}}`**. It is a race, not a rule — the retry succeeded (`on_hold →
+  cancelled`). The §6 error model already treats 5xx as retryable; the H runner should also space
+  successive actions on one charge.
+- **Manual cancel = a real `cancelled` terminal** (deviation §12.19). This is the only observed way
+  to reach charge status `cancelled` (no `sandbox_outcome` does — spec §18.8).
+- Scenario **H** shape: create (`paid`, `balance_check: "disabled"`) → `hold` → observe `on_hold` →
+  `release` → `paid` (or `cancel` → `cancelled`). Fast (no long poll needed to demonstrate the
+  hold/release transitions). **GO** for mock + live.
+
+### P12. Webhooks — Svix / Standard Webhooks; dashboard-configured
+
+- **No webhook-management API on the sandbox host.** `GET /v1/webhooks`, `/v1/webhook_endpoints`,
+  `/v1/event_subscriptions`, `/v1/subscriptions`, `/v1/notifications`, `/v1/events`, `/v1/endpoints`
+  all return a **router-level HTML 404** (not the JSON `error` envelope that a real resource-404
+  returns), i.e. those routes do not exist on the API. The SDK client (`@straddlecom/straddle`) has
+  **no webhooks resource** either. Endpoint registration is **dashboard-only** (Developers →
+  Webhooks: add a URL you control, select event types, receive a `whsec_` signing secret). Docs
+  mention custom API management workflows, but no such endpoint is reachable on this key
+  (UNVERIFIED / likely platform-tier).
+- **Signing (VERIFIED from docs.straddle.com/webhooks/security/manual):** this is the **Standard
+  Webhooks / Svix** scheme. Headers on every delivery: **`webhook-id`**, **`webhook-timestamp`**,
+  **`webhook-signature`**. Algorithm **HMAC-SHA256** over the exact string
+  `` `${webhook-id}.${webhook-timestamp}.${rawBody}` `` — the **raw** request body, un-reserialized.
+  The secret is `whsec_<base64>`; key bytes = base64-decode the part after `whsec_`
+  (`Buffer.from(secret.split('_')[1], "base64")`). `webhook-signature` is a space-delimited list of
+  `v1,<base64sig>` entries. Reject if `webhook-timestamp` is more than ~5 min from now (replay
+  guard). **Never accept an unsigned live webhook** (spec P2-3 risk).
+- **Event types (VERIFIED list, all `.v1`-suffixed):** `charge.created.v1`, `charge.event.v1`,
+  `payout.created.v1`, `payout.event.v1`, `customer.created.v1`, `customer.event.v1`,
+  `paykey.created.v1`, `paykey.event.v1`; plus platform/embed: `account.created.v1`,
+  `account.event.v1`, `linked_bank_account.created.v1`, `linked_bank_account.event.v1`,
+  `representative.created.v1`, `representative.event.v1`, `capability_request.created.v1`,
+  `capability_request.event.v1`. **Charge reversals arrive under the generic `charge.event.v1`**
+  ("successful processing, failures, fraud detections, settlement status"), NOT a dedicated
+  reversal event.
+- **Polling alternative:** Straddle exposes a **Svix per-endpoint poller URL**
+  `https://api.us.svix.com/api/v1/app/{app_id}/poller/{poll_id}` (bearer), returning
+  `{ "data": [], "iterator": "…", "done": false }`. This is Svix, not `straddle.io`. Not usable
+  without a configured endpoint.
+- **Source IPs (allowlist, US region, VERIFIED):** `44.228.126.217`, `50.112.21.217`,
+  `52.24.126.164`, `54.148.139.208`, `2600:1f24:64:8000::/56` (full list at the docs
+  `webhooks-ips.json`; sandbox vs prod not differentiated).
+- **Payload envelope — UNVERIFIED.** The docs show no sample body; the Standard Webhooks convention
+  is a body carrying the event `type` plus the resource data. Capture a real delivery (Svix
+  debugger or a tunnelled endpoint) before building a strict parser; build tolerant.
+- **§18.1 open question (reversal webhook-only?) — PARTIALLY resolved.** A reversal *would* be
+  delivered via `charge.event.v1` if the sandbox fires one; whether the sandbox actually emits a
+  `reversed` status over webhook that polling (`GET charge`) never surfaces is **UNVERIFIED** —
+  it needs a live delivery to a configured endpoint (dashboard + public tunnel), unavailable here.
+  Polling stays authoritative (spec P2 principle).
+- **Go/no-go:** webhook **contract + receiver + correlation + fixtures/replay: GO** (fully testable
+  offline with synthetic signed payloads). **Live delivery gate: BLOCKED** here — requires
+  dashboard endpoint config + a public tunnel. Implement fixture/mock-first behind an explicit
+  "unsigned-fixture" flag; keep live acceptance signature-gated.
+- **Redaction impact:** webhook bodies carry charge/payout/customer/paykey resource data → the
+  full §11 inventory applies (paykey token, account/routing, `device.ip_address`, PII). Add the
+  `whsec_` secret and the three `webhook-*` headers (+ raw signature) to redaction/canary. The
+  **raw body must be retained for signature verification, then redacted before capture** — the one
+  ordering subtlety for the receiver.
+
+### P13. Payouts — available; GO
+
+- **POST `/v1/payouts` → 201** on this sandbox key (status `created`). Payout capability is present
+  (spec had this UNPROBED). `GET /v1/payouts` (list) → 405 (create-only there).
+- **Full surface** (SDK-confirmed; create OBSERVED): `POST /v1/payouts`, `GET /v1/payouts/{id}`,
+  `PUT /v1/payouts/{id}/{cancel,hold,release}`, `PUT /v1/payouts/{id}` (update), plus a `resubmit`
+  method. Never call `GET /v1/payouts/{id}/unmask` (raw PII).
+- **Create body (differs from charges):** `{ amount (cents), currency: "USD", description,
+  device:{ip_address}, external_id (unique), paykey (token), payment_date: "YYYY-MM-DD",
+  config?:{sandbox_outcome?}, metadata? }`. **No `config.balance_check`** and **no `consent_type`**
+  (both charges-only) — the §8 balance-check trap does not apply to payouts.
+- `config.sandbox_outcome` enum is **identical to charges** ("Payment will simulate processing if
+  not Standard"); `status` enum identical (`created|scheduled|failed|cancelled|on_hold|pending|
+  paid|reversed`); `status_details.source` identical. A payout is money OUT — the charge `reason`
+  enum's `payout_refused` is the payout-side decline.
+- **Response shape mirrors `ChargeV1`** (OBSERVED): `data` keys `amount, config, created_at,
+  currency, description, device, external_id, funding_ids[], has_resubmit, id, is_refund,
+  is_resubmit, paykey, payment_date, status, status_details, status_history, trace_ids, updated_at`.
+  `paykey` is **masked in the response** (like charges), `device` masked. No `customer_details` PII
+  block in the create response.
+- **Timing UNVERIFIED** — a payout was not polled to terminal; likely mirrors charges (~117 s for
+  `paid`) but not measured. Measure before putting payouts in any timed budget.
+- **Redaction impact:** same field inventory as charges (§11) — no NEW sensitive field names. DTOs
+  must tolerate payout-only keys `funding_ids`, `is_refund`, `is_resubmit`, `has_resubmit`
+  (non-sensitive). Add payout create/response bodies to redaction fixtures for the `paykey`/`device`
+  masking paths.
+- **Go/no-go:** **GO** (P2-4). Smallest useful path: create(`paid`) → poll → report, mock-first; UI
+  its own evidence card / wire tab, never on the charge rail.
+
+### P14. F/G/I scenario decisions + new charge outcomes — OBSERVED
+
+New `sandbox_outcome` behaviors measured this pass (all `balance_check: "disabled"`):
+
+| sandbox_outcome | terminal | reason / source / code | timing | poisons account? |
+| --- | --- | --- | --- | --- |
+| `failed_closed_bank_account` | `failed` | `closed_bank_account` / `bank_decline` / **`R02`** | ~117 s (like B) | **YES (R02)** |
+| `reversed_closed_bank_account` | `failed` | `closed_bank_account` / `bank_decline` / **`R02`** | ~332 s; `created→scheduled→pending×3→failed`; **never** `paid`/`reversed` (same §18.1 deviation) | **YES (R02)** |
+| `on_hold_daily_limit` | `on_hold` (non-terminal) | `amount_too_large` / `watchtower` / (no code) | immediate | no |
+| `standard` | (stuck) `scheduled` | `ok` / `system` | still `scheduled` >6 min, never reached `pending` — does not accelerate (awaits real ACH timing); terminal UNVERIFIED | n/a |
+
+- **R02 poisoning (deviation §12.18, the headline of this pass).** After
+  `failed_closed_bank_account` settled, POST `/v1/bridge/bank_account` for the same routing+account
+  returned **422** *"This bank account has been blocked due to return code R02 (ClosedBankAccount).
+  Creating new paykeys with this bank account is not allowed."* So **R02 poisons like R05** —
+  spec §18.2 only knew R05. Both seeded accounts are now blocked on this key
+  (`123456789`=R05, `987654321`=R02). **The escape hatch is VERIFIED:** paykeys created with
+  arbitrary never-seeded account numbers (e.g. `44xxxx1122`, `77xxxx0011`) + routing `021000021`
+  come back `active` and charge normally — because the outcome is forced by `sandbox_outcome`,
+  account-independent (docs confirm; observed). **Engine recommendation (code change, not this
+  docs PR):** generate a **random per-run account number** (routing `021000021`) rather than the
+  shared `SEEDED_BANK.preferred_account_number`. This both (a) makes closed-bank-account scenarios
+  repeatable and (b) unblocks the live A–E suite, which will otherwise 422 on paykey create now
+  that `987654321` is R02-blocked. Flag to the integrator; `SEEDED_BANK`/redaction-canary handling
+  of the seeded values stays as-is for the canary list.
+- **Recommended mapping** (final letters are the P2-2 contract PR's call):
+  - **F = `failed_closed_bank_account`** → `failed` + **R02**. Teaching value: a second ACH decline
+    code beyond B's R01; fast (~2 min). **GO** mock + live — must use a fresh random account.
+  - **G = `reversed_closed_bank_account`** → reversal-shaped R02; same live deviation as C (mock/
+    replay demonstrate `paid→reversed`; **live** asserts `failed` + R02 + the ~241 s reversal-window
+    delay). **GO** mock/replay + live-as-deviation — fresh random account.
+  - **I = manual-cancellation** → a real terminal `cancelled` via `PUT /v1/charges/{id}/cancel`
+    (deviation §12.19). Clean, fast, teaches the action verbs and the true `cancelled` status that
+    no `sandbox_outcome` reaches. **RECOMMENDED** over `standard` (which is not demo-friendly:
+    stuck `scheduled`, no acceleration).
+  - **H = hold/release** — see §P11.
+- All new live scenarios keep the §18.1/§18.8 pattern: the mock/replay demonstrate the intended
+  contract; live asserts what the sandbox actually did, documented as a deviation where they differ.
 
 ---
 
