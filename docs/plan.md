@@ -146,3 +146,132 @@ Each wave: in-workflow verify stage + my out-of-workflow gate (tests + live/manu
 ## Estimated shape
 
 7 workflow invocations (~25–30 subagents) across 6 waves. Biggest schedule risks, in order: (1) the environment reconfiguration not landing (caught at Step 0, zero tokens wasted); (2) M0 timings breaking the 15-minute budget (caught at Gate 0, forces re-plan of concurrency/poll policy, not of architecture).
+
+---
+
+# P2 continuation plan
+
+This section starts from the P1-complete baseline: A-E run from CLI and web, exchanges are recorded to JSONL, replays can drive the main lifecycle/wire panes, JSON payloads are inspectable, and the UI has the P1 detail surfaces. The original plan above stays as the historical execution plan; P2 is the next forward plan.
+
+## P2 scope
+
+Primary P2 work from `docs/spec.md` Wave 6:
+
+- cURL copy for redacted API exchanges.
+- Replay scrubber polish beyond basic 10x playback.
+- Toasts for important state transitions on unselected scenarios.
+- Scenario H hold/release.
+- Scenarios F/G/I.
+- Inbound Straddle webhooks.
+- Payouts, after a separate API truth check.
+
+## P2 principles
+
+- **Mock-first, live-second:** every new scenario and webhook path lands against the mock/fixtures before touching the sandbox.
+- **One sandbox-touching lane at a time:** API discovery, live scenario smoke, webhook delivery, and payout probing are serialized.
+- **Polling remains the fallback:** webhooks add another signal path; they do not replace the poller until live evidence proves parity.
+- **Redaction is still a gate:** copied cURL, webhook captures, replay files, reports, console output, and UI bundles must pass the same secret/canary discipline.
+- **Contract changes are synchronized:** `shared/`, server emitters, web consumers, fixtures, and docs change in one wave whenever a new event or observation type is added.
+- **Document observed truth:** `api-notes.md` gets updated during discovery; unknown Straddle behavior is never filled in by guesswork.
+
+## P2 dependency graph
+
+```mermaid
+flowchart TD
+  P20["P2-0 API truth refresh"]
+  G20{"Gate: api-notes.md updated<br/>scenario/webhook/payout decisions made"}
+  P21["P2-1 Wire utility + replay polish"]
+  P22["P2-2 F/G/H/I scenarios"]
+  P23["P2-3 Inbound webhooks"]
+  P24["P2-4 Payouts"]
+  P25["P2-5 Docs + finalization"]
+
+  P20 --> G20
+  G20 --> P21
+  G20 --> P22
+  G20 --> P23
+  G20 --> P24
+  P21 --> P25
+  P22 --> P25
+  P23 --> P25
+  P24 --> P25
+```
+
+(* = sole sandbox-touching agent in its wave; parallel work is safe only after the API truth refresh has pinned the contract.)
+
+## P2-0 — API truth refresh (*, one workflow)
+
+- Verify charge action endpoints from `api-notes.md`: `PUT /v1/charges/{id}/hold`, `/release`, and `/cancel`, including request body shape, idempotency behavior, response status, and resulting lifecycle statuses.
+- Verify the P2 scenarios F/G/I against current Straddle sandbox behavior and decide which are useful teaching scenarios versus mock-only edge cases.
+- Discover webhook setup requirements: delivery URL configuration, signing headers, event IDs, retry behavior, payload shape, and whether charge reversals can arrive webhook-only.
+- Discover payout prerequisites: endpoint availability, permissions needed, sandbox funding assumptions, request/response shape, and likely UI surface.
+- Update `api-notes.md` with observed facts, deviations, timings, and any fields that must be added to redaction fixtures.
+
+**Gate (me):** `api-notes.md` is updated; no key/account/routing/payment data survives in notes or captures; P2 scenario order is fixed; webhook signing stance is explicit. If webhook signing or payout access cannot be verified, mark that lane blocked for live mode but continue fixture/mock implementation where useful.
+
+## P2-1 — Wire utility, replay scrubber, toasts (web-heavy, one workflow)
+
+- Add cURL copy to API exchange rows using already-redacted method/path/body data. The generated command must use placeholder auth (`$STRADDLE_API_KEY`) and must never copy raw secrets, account numbers, routing numbers, paykeys, or unredacted request bodies.
+- Upgrade replay controls from "Play 10x" to a scrubber: play/pause, seek, speed selection, current event marker, partial-recording marker, and deterministic reset.
+- Add bottom-right toasts for transitions on unselected scenarios per `docs/design.md`: short-lived, status-colored edge, no layout overlap, no duplicate spam during replay hydration.
+- Keep replay playback and live runs visually distinct so a user can tell when they are watching recorded evidence.
+
+**Gate (me):** component tests cover cURL generation, scrub/seek behavior, replay reset, and toast de-duping; browser smoke verifies no overlapping controls at desktop and mobile widths; `check:secrets` passes after a web build.
+
+## P2-2 — Scenarios F/G/I and H hold/release (engine + mock + UI, one workflow)
+
+- Extend scenario definitions for F/G/H/I without changing `ScenarioIdSchema` unless the actual scope changes; the enum already includes `a` through `i`.
+- Add mock schedules and deterministic recordings for each new scenario, including an explicit H hold/release lifecycle.
+- Add runner orchestration for hold/release actions, including idempotency keys, API exchange recording, poller expectations, and evaluator observations.
+- Add new report evidence only if needed; if a new observation type is required, update `shared/`, fixtures, web detail panels, and docs in the same change.
+- Teach the UI enough vocabulary for new statuses such as `on_hold`, without defaulting them into ambiguous colors or labels.
+
+**Gate (me):** mock A-I suite passes; each new scenario has at least one replay fixture; reports parse through `ReportSchema`; one live smoke per new live-supported scenario passes in serial; unsupported live behavior is documented as a deviation rather than hidden.
+
+## P2-3 — Inbound webhooks (server + shared + web, one workflow)
+
+- Add a webhook receiver route, likely `POST /api/webhooks/straddle`, with raw-body access if signing verification requires it.
+- Verify signatures in live mode if Straddle provides signing; unsigned live webhooks should be rejected or kept behind an explicit local-only fixture mode.
+- Redact and persist webhook payloads into the same recording stream as other run evidence, using new event types such as `webhook.received`, `webhook.verified`, `webhook.matched`, and `webhook.ignored` if the shared contract needs that granularity.
+- Correlate webhooks to runs by stable IDs: `external_id`, run metadata, customer/paykey/charge IDs, and event IDs. Deduplicate retries by webhook/event ID.
+- Normalize webhook-driven status changes into the existing lifecycle model only when the webhook carries newer or previously unseen state; polling remains authoritative when events disagree.
+- Surface webhook evidence in the event console, inspector, and exchange/detail panes so users can see exactly how webhook and polling signals relate.
+
+**Gate (me):** fixture webhook tests cover valid, invalid-signature, duplicate, unmatched, and out-of-order payloads; replay of a webhook-bearing recording works offline; local tunnel/live delivery is demonstrated if configured; otherwise the live webhook gate is recorded as blocked with a concrete reason.
+
+## P2-4 — Payouts (API-gated, one workflow after P2-0)
+
+- Use P2-0 findings to decide whether payouts are a scenario, a separate panel, or a CLI-only teaching lane.
+- Add payout types, mock adapter support, and redaction coverage before adding any UI.
+- Implement the smallest useful payout path first: create/observe/report, with clear evidence and no assumptions about settlement timing beyond observed sandbox behavior.
+- Add UI only after the engine/report shape is stable, likely as a dedicated evidence card or wire-tab section rather than overloading charge lifecycle.
+
+**Gate (me):** payout mock tests pass; one live smoke passes if permissions allow; otherwise docs explain the missing sandbox capability; secret scan covers payout fields.
+
+## P2-5 — Docs, dry runs, finalization
+
+1. Update `docs/spec.md` with any P2 contract changes, webhook/payout deviations, and scenario behavior that differs from the original assumptions.
+2. Update README with P2 commands, webhook local testing instructions, replay controls, cURL copy safety notes, and artifact locations.
+3. Run full checks: `npm run typecheck`, `npm test`, `npm run check:secrets`, report parsing, and a replay-only smoke.
+4. Run live dry-runs in serial for all live-supported scenarios; keep webhook and payout live gates separate so a blocked external setup does not obscure scenario quality.
+5. Do a final review pass focused on redaction, event ordering, replay determinism, and UI clarity.
+
+## P2 acceptance checklist
+
+- cURL copy is useful for learning but always redacted and placeholder-authenticated.
+- Replay can pause, seek, change speed, restart, and display partial recordings without corrupting the live event store.
+- Toasts announce offscreen state transitions without duplicates or visual overlap.
+- F/G/H/I are either live-supported with evidence or explicitly documented as mock/deviation cases.
+- Scenario H demonstrates hold and release with clear API exchanges, lifecycle states, and report evidence.
+- Webhooks are verified, redacted, correlated, deduped, persisted to `runs/*.jsonl`, replayable, and visible in the UI.
+- Polling still works when webhooks are absent, delayed, duplicated, or out of order.
+- Payouts ship only if API access and sandbox behavior are understood; otherwise they remain a documented blocked lane.
+- Final checks pass, and any spec/API drift is documented in the same change as the code.
+
+## P2 risks
+
+- **Webhook ingress:** live webhook testing may require a public tunnel or Straddle dashboard configuration that is not available locally. Fixture and mock coverage should land first; live delivery can be a gated follow-up.
+- **Webhook signing uncertainty:** do not ship unauthenticated live webhook acceptance. If signing cannot be verified, keep the route local-only or fixture-only.
+- **Sandbox timing drift:** new scenario outcomes may have long or inconsistent status windows. Measure before adding them to Run All expectations.
+- **Payout permissions:** payout APIs may require account capabilities not present on the sandbox key.
+- **Contract churn:** webhooks and payouts may need new event/report shapes. Keep each contract edit small and synchronized across shared, server, web, fixtures, and docs.
