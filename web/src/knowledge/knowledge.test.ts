@@ -11,6 +11,7 @@ import {
   ENDPOINTS,
   PAYKEY_STATUSES,
   RETURN_CODES,
+  WEBHOOK_NOTES,
   deviationById,
   fieldNotesFor,
   matchEndpoint,
@@ -18,6 +19,8 @@ import {
   returnCodeNote,
   statusNote,
   timelineDeviationsFor,
+  webhookNote,
+  webhookTypeNote,
 } from "./index";
 import { SCENARIO_COPY } from "../state/projections";
 
@@ -35,6 +38,7 @@ const ALL_ENTRIES = [
   ...RETURN_CODES,
   ...ALL_OUTCOMES,
   ...ENDPOINTS,
+  ...WEBHOOK_NOTES,
 ];
 
 describe("knowledge entries", () => {
@@ -105,6 +109,28 @@ describe("knowledge entries", () => {
       expect(outcome.danger, outcome.term).toBe("poisons");
       // The prose teaches R02 abstractly — never a seeded account number.
       expect(outcome.short, outcome.term).not.toMatch(/987654321|123456789|021000021/);
+    }
+  });
+});
+
+describe("webhook notes (P2-3.4)", () => {
+  it("teaches that webhooks corroborate and polling stays authoritative", () => {
+    const note = webhookNote();
+    expect(note?.short).toMatch(/corroborate/i);
+    expect(note?.short).toMatch(/authoritative/i);
+    expect(note?.source).toMatch(/^api-notes §12\.22/);
+  });
+
+  it("has a per-type note for the generic charge event reversals ride", () => {
+    expect(webhookTypeNote("charge.event.v1")?.term).toBe("charge.event.v1");
+    expect(webhookTypeNote("nonesuch.v1")).toBeUndefined();
+  });
+
+  it("never leaks a signing secret or seeded value into the prose", () => {
+    for (const entry of WEBHOOK_NOTES) {
+      const text = `${entry.short} ${entry.detail ?? ""}`;
+      expect(text, entry.id).not.toMatch(/whsec_[A-Za-z0-9]/);
+      expect(text, entry.id).not.toMatch(/987654321|123456789|021000021/);
     }
   });
 });

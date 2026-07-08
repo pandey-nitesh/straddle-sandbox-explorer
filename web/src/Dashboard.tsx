@@ -40,6 +40,7 @@ import {
   projectRunOverview,
   projectScenarioItems,
   projectTimelineNodes,
+  projectWebhooks,
 } from "./state/projections";
 
 /**
@@ -217,6 +218,10 @@ export function Dashboard({ fetchFn }: DashboardProps) {
     () => (run === null ? undefined : projectDetailPanel(run, { explain })),
     [run, explain],
   );
+  const webhookPanel = useMemo(
+    () => (run === null ? undefined : projectWebhooks(run, { explain })),
+    [run, explain],
+  );
   const inspectorEntries = useMemo(
     () => (run === null ? [] : projectInspectorEntries(run)),
     [run],
@@ -294,6 +299,7 @@ export function Dashboard({ fetchFn }: DashboardProps) {
               events={inspectorEntries}
               consoleEntries={eventConsoleEntries}
               exchanges={exchanges}
+              {...(webhookPanel !== undefined ? { webhooks: webhookPanel } : {})}
             />
           )
         }

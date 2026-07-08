@@ -10,6 +10,7 @@ import type {
   ScenarioAssertionEvent,
   ScenarioDef,
   ScenarioId,
+  WebhookReceivedEvent,
 } from "@sse/shared";
 import type { RegistrySnapshot, RunSnapshot } from "../api";
 import {
@@ -169,6 +170,25 @@ function assertion(
     kind,
     pass,
     ...(diagnostic !== undefined ? { diagnostic } : {}),
+  };
+}
+
+function webhook(
+  seq: number,
+  runId: string,
+  scenarioId: ScenarioId,
+  extra: Partial<WebhookReceivedEvent> = {},
+): WebhookReceivedEvent {
+  return {
+    type: "webhook.received",
+    seq,
+    timestamp: at(seq),
+    run_id: runId,
+    scenario_id: scenarioId,
+    event_id: `evt_${seq}`,
+    webhook_type: "charge.event.v1",
+    verified: true,
+    ...extra,
   };
 }
 
@@ -389,6 +409,59 @@ describe("scenario E refusal evidence", () => {
     ]);
     expect(store.getState().runs["run-a"]?.refusal).toBeUndefined();
     expect(store.getState().runs["run-a"]?.timeline).toEqual([]);
+  });
+});
+
+describe("webhook evidence (P2-3.4)", () => {
+  it("derives a webhooks list with the right fields, kept OUT of the timeline", () => {
+    const store = createEventStore();
+    const detail = { data: { id: "chg_1", status: "failed" }, type: "charge.event.v1" };
+    store.applyEvents([
+      started(1, "run-c", DEF_C),
+      status(2, "run-c", "c", null, "pending"),
+      webhook(3, "run-c", "c", {
+        event_id: "evt_abc",
+        webhook_type: "charge.event.v1",
+        verified: true,
+        resource_id: "chg_1",
+        delivered_at: at(3),
+        detail,
+      }),
+      status(4, "run-c", "c", "pending", "failed", { return_code: "R01" }),
+      webhook(5, "run-c", "c", {
+        event_id: "evt_def",
+        verified: false,
+        resource_id: "chg_1",
+      }),
+    ]);
+
+    const run = store.getState().runs["run-c"];
+    expect(run?.webhooks).toHaveLength(2);
+    expect(run?.webhooks[0]).toEqual({
+      seq: 3,
+      eventId: "evt_abc",
+      webhookType: "charge.event.v1",
+      verified: true,
+      resourceId: "chg_1",
+      deliveredAt: at(3),
+      at: at(3),
+      detail,
+    });
+    // Unverified delivery, no delivered_at/detail — optional fields absent.
+    expect(run?.webhooks[1]?.verified).toBe(false);
+    expect(run?.webhooks[1]?.deliveredAt).toBeUndefined();
+    expect(run?.webhooks[1]?.detail).toBeUndefined();
+
+    // Corroborating evidence only — the payment timeline stays pending→failed.
+    expect(
+      run?.timeline.map((n) => (n.kind === "status" ? n.status : n.kind)),
+    ).toEqual(["pending", "failed"]);
+  });
+
+  it("leaves webhooks empty for a run that received none", () => {
+    const store = createEventStore();
+    store.applyEvents([started(1, "run-a", DEF_A), status(2, "run-a", "a", null, "paid")]);
+    expect(store.getState().runs["run-a"]?.webhooks).toEqual([]);
   });
 });
 

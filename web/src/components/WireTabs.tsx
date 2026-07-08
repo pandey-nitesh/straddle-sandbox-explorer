@@ -6,15 +6,19 @@ import {
 } from "./EventConsoleDrawer";
 import { ExchangeLog, type ExchangeEntry } from "./ExchangeLog";
 import { InspectorPanel, type InspectorEntry } from "./InspectorPanel";
+import { WebhookPanel, type WebhookPanelProps } from "./WebhookPanel";
 
 export interface WireTabsProps {
   details: DetailPanelProps;
   events: InspectorEntry[];
   consoleEntries: EventConsoleEntry[];
   exchanges: ExchangeEntry[];
+  /** Inbound-webhook evidence (P2-3.4). The tab appears only when a run has
+   *  webhooks — no empty chrome otherwise. */
+  webhooks?: WebhookPanelProps;
 }
 
-type WireTabId = "details" | "events" | "exchanges" | "console";
+type WireTabId = "details" | "events" | "exchanges" | "console" | "webhooks";
 
 interface WireTab {
   id: WireTabId;
@@ -27,15 +31,22 @@ export function WireTabs({
   events,
   consoleEntries,
   exchanges,
+  webhooks,
 }: WireTabsProps) {
+  const webhookCount = webhooks?.entries.length ?? 0;
+  const hasWebhooks = webhookCount > 0;
   const tabs = useMemo<WireTab[]>(
     () => [
       { id: "exchanges", label: "Exchanges", count: exchanges.length },
       { id: "events", label: "Events", count: events.length },
+      // Only when a run actually received webhooks (empty-state hygiene).
+      ...(hasWebhooks
+        ? [{ id: "webhooks" as const, label: "Webhooks", count: webhookCount }]
+        : []),
       { id: "details", label: "Details" },
       { id: "console", label: "Console", count: consoleEntries.length },
     ],
-    [consoleEntries.length, events.length, exchanges.length],
+    [consoleEntries.length, events.length, exchanges.length, hasWebhooks, webhookCount],
   );
   const [active, setActive] = useState<WireTabId>(
     exchanges.length > 0 ? "exchanges" : "details",
@@ -51,7 +62,9 @@ export function WireTabs({
       <div
         role="tablist"
         aria-label="Wire views"
-        className="grid shrink-0 grid-cols-4 gap-1 rounded-inset bg-surface-inset p-1"
+        className={`grid shrink-0 ${
+          hasWebhooks ? "grid-cols-5" : "grid-cols-4"
+        } gap-1 rounded-inset bg-surface-inset p-1`}
       >
         {tabs.map((tab) => (
           <button
@@ -83,6 +96,11 @@ export function WireTabs({
       >
         {activeTab.id === "details" && <DetailPanel {...details} />}
         {activeTab.id === "events" && <InspectorPanel entries={events} />}
+        {activeTab.id === "webhooks" && webhooks !== undefined && (
+          <ScrollablePanel>
+            <WebhookPanel {...webhooks} />
+          </ScrollablePanel>
+        )}
         {activeTab.id === "exchanges" && (
           <ScrollablePanel empty={exchanges.length === 0 ? "No exchanges yet." : undefined}>
             <ExchangeLog entries={exchanges} />
