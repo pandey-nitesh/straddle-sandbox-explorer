@@ -13,7 +13,7 @@ import type {
 } from "@sse/shared";
 import { ReportSchema } from "@sse/shared";
 import { recordingPathFor } from "./recorder.js";
-import { RUNNABLE_SCENARIO_IDS } from "./scenarios.js";
+import { REQUIRED_SCENARIO_IDS } from "./scenarios.js";
 
 export interface BuildReportOptions {
   generatedAt?: string;
@@ -56,7 +56,11 @@ export function buildReport(
 
   const covered = scenarios.map((s) => s.id);
   const anyFailed = scenarios.some((s) => s.status === "failed");
-  const allCovered = RUNNABLE_SCENARIO_IDS.every((id) => covered.includes(id));
+  // Coverage gates on the REQUIRED suite (A–E, spec §5), NOT the full runnable
+  // set: F/G/H/I are reportable but never make a report `partial` by absence.
+  // `anyFailed` still spans every covered scenario, so a failed F/G/H/I in the
+  // same batch does fail the suite.
+  const allCovered = REQUIRED_SCENARIO_IDS.every((id) => covered.includes(id));
   const suiteStatus = !allCovered ? "partial" : anyFailed ? "failed" : "passed";
   const latestBuckets = [...latestByScenario.values()];
   const firstStarted = minTimestamp(latestBuckets.map((bucket) => bucket.started.timestamp));

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { ScenarioId } from "@sse/shared";
 import { SANDBOX_BASE_URL } from "../config.js";
 import type { EventBus } from "../engine/bus.js";
 import { RealClock } from "../engine/runner.js";
@@ -20,7 +21,10 @@ import type {
 
 export interface StraddleClientContext {
   run_id: string;
-  scenario_id: "a" | "b" | "c" | "d" | "e";
+  // ScenarioId (a–i), not the old a–e literal: F/G/H/I are runnable (P2-2), and
+  // this value is only echoed into api.exchange/retry.scheduled events whose
+  // scenario_id is already ScenarioId. Type-only widening — no behavior change.
+  scenario_id: ScenarioId;
 }
 
 export interface CreateStraddleClientOptions {

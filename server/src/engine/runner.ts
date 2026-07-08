@@ -1,8 +1,9 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { Faker, base, en, en_US } from "@faker-js/faker";
 import {
   SEEDED_BANK,
+  expectsReversal,
   type ApiRefusal,
   type IdentityReviewSummary,
   type Report,
@@ -241,7 +242,13 @@ async function runOneScenario(args: {
       chargeInput(paykey, args.scenario, args.run_id, args.clock),
     );
     observeCharge(args, evidence, charge);
-    await pollCharge(args, evidence, client, charge);
+    if (args.scenario.id === "h") {
+      await runHoldRelease(args, evidence, client, charge);
+    } else if (args.scenario.id === "i") {
+      await runManualCancel(args, evidence, client, charge);
+    } else {
+      await pollCharge(args, evidence, client, charge);
+    }
   } catch (error) {
     if (error instanceof Error) {
       evidence.diagnostics.push(error.message);
@@ -263,7 +270,7 @@ async function captureExpectedRefusal(
     await client.createPaykey({
       customer_id: customer.id,
       routing_number: SEEDED_BANK.routing_number,
-      account_number: SEEDED_BANK.preferred_account_number,
+      account_number: randomAccountNumber(),
       account_type: "checking",
       config: { sandbox_outcome: "active" },
       external_id: runId,
@@ -285,18 +292,67 @@ async function captureExpectedRefusal(
   }
 }
 
-async function pollCharge(
-  args: {
-    scenario: RunnableScenarioDef;
-    run_id: string;
-    bus: EventBus;
-    clock: Clock;
-    scheduler: RateFloorScheduler;
-    pollPolicy?: Partial<PollPolicy>;
-  },
+/** The subset of a run's context the poll/action helpers need. */
+interface PollableArgs {
+  scenario: RunnableScenarioDef;
+  run_id: string;
+  bus: EventBus;
+  clock: Clock;
+  scheduler: RateFloorScheduler;
+  pollPolicy?: Partial<PollPolicy>;
+}
+
+/**
+ * Scenario H (hold/release, spec §P11): hold the just-created charge, confirm
+ * `on_hold`, then release and let the resumed pipeline settle as `paid`. Each
+ * action's `api.exchange` is emitted by the client; the poll between the two
+ * mutations both confirms `on_hold` AND spaces them, avoiding the live
+ * back-to-back "Concurrency error" 500 (api-notes §P11).
+ */
+async function runHoldRelease(
+  args: PollableArgs,
   evidence: ScenarioEvidence,
   client: StraddleClient,
   initial: ChargeResult,
+): Promise<void> {
+  const held = await client.holdCharge(initial.id, { idempotencyKey: randomUUID() });
+  observeCharge(args, evidence, held);
+  await pollCharge(args, evidence, client, held, {
+    isSettled: (charge) =>
+      charge.status === "on_hold" || TERMINAL_CHARGE_STATUSES.has(charge.status),
+  });
+  const released = await client.releaseCharge(initial.id, {
+    idempotencyKey: randomUUID(),
+  });
+  observeCharge(args, evidence, released);
+  await pollCharge(args, evidence, client, released);
+}
+
+/**
+ * Scenario I (manual cancel, spec §12.19): cancel the pre-terminal charge — the
+ * only way to reach a real terminal `cancelled` (no `sandbox_outcome` does) —
+ * then poll to confirm the terminal. The cancel's `api.exchange` is emitted by
+ * the client.
+ */
+async function runManualCancel(
+  args: PollableArgs,
+  evidence: ScenarioEvidence,
+  client: StraddleClient,
+  initial: ChargeResult,
+): Promise<void> {
+  const cancelled = await client.cancelCharge(initial.id, {
+    idempotencyKey: randomUUID(),
+  });
+  observeCharge(args, evidence, cancelled);
+  await pollCharge(args, evidence, client, cancelled);
+}
+
+async function pollCharge(
+  args: PollableArgs,
+  evidence: ScenarioEvidence,
+  client: StraddleClient,
+  initial: ChargeResult,
+  opts?: { isSettled?: (charge: ChargeResult) => boolean },
 ): Promise<void> {
   // Poll-level retry counter (P2-R.3): the failed fetch is attempt 1, so the
   // retry.scheduled events start at 2 (RetryScheduledEventSchema requires >=2).
@@ -310,8 +366,12 @@ async function pollCharge(
       onObservation: (charge) => observeCharge(args, evidence, charge),
       statusOf: (charge) => charge.status,
       switchToFast: (charge) =>
-        args.scenario.id === "c" && charge.status_history.some((h) => h.status === "pending"),
-      isSettled: (charge) => isChargeSettled(args.scenario, charge, evidence.transitions),
+        expectsReversal(args.scenario) &&
+        charge.status_history.some((h) => h.status === "pending"),
+      isSettled: (charge) =>
+        opts?.isSettled !== undefined
+          ? opts.isSettled(charge)
+          : isChargeSettled(args.scenario, charge, evidence.transitions),
       onFetchError: (error, context) => {
         // Only a RETRYABLE-exhausted Straddle error (429/5xx the client already
         // retried) is a transient blip we poll through; anything else (404,
@@ -422,11 +482,12 @@ function isChargeSettled(
   charge: ChargeResult,
   transitions: StatusTransition[],
 ): boolean {
-  if (scenario.id === "c") {
-    // paid is provisional for C — keep watching for the reversal.
+  if (expectsReversal(scenario)) {
+    // paid is provisional for reversal scenarios (C, G contract) — keep watching
+    // for the reversal. Derived from the def, never keyed on scenario id.
     return (
       transitions.some((t) => t.to === "reversed") ||
-      TERMINAL_CHARGE_STATUSES.has(charge.status) && charge.status !== "paid"
+      (TERMINAL_CHARGE_STATUSES.has(charge.status) && charge.status !== "paid")
     );
   }
   // ANY terminal settles the poll — reaching the wrong terminal is an
@@ -485,7 +546,7 @@ function paykeyInput(
   return {
     customer_id: customer.id,
     routing_number: SEEDED_BANK.routing_number,
-    account_number: SEEDED_BANK.preferred_account_number,
+    account_number: randomAccountNumber(),
     account_type: "checking" as const,
     config: { sandbox_outcome: scenario.outcomes.paykey ?? "active" },
     external_id: runId,
@@ -518,6 +579,26 @@ function chargeInput(
     metadata: { scenario_id: scenario.id },
     idempotencyKey: randomUUID(),
   };
+}
+
+/**
+ * A fresh random 9-digit bank account number, never a `SEEDED_BANK` account
+ * (api-notes §12.18). Both seeded accounts are now poisoned (987654321=R02,
+ * 123456789=R05) and reject new paykey creation, whereas arbitrary never-seeded
+ * accounts create working paykeys — the outcome is forced by `sandbox_outcome`,
+ * account-independent. Per-run randomness keeps the closed-account scenarios
+ * (F/G) repeatable without re-poisoning a shared account and unblocks the live
+ * A–E suite. Redacted by field name (`account_number`, last-4) before capture,
+ * so it never survives into events, reports, recordings, or logs — the routing
+ * number stays `SEEDED_BANK.routing_number`.
+ */
+export function randomAccountNumber(): string {
+  for (;;) {
+    const account = randomInt(0, 1_000_000_000).toString().padStart(9, "0");
+    if (!SEEDED_BANK.account_numbers.some((seeded) => seeded === account)) {
+      return account;
+    }
+  }
 }
 
 function makeRunId(scenarioId: RunnableScenarioId, clock: Clock): string {

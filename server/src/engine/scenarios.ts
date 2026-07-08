@@ -6,7 +6,10 @@ import type {
   PaykeySandboxOutcome,
 } from "../straddle/types.js";
 
-export type RunnableScenarioId = Extract<ScenarioId, "a" | "b" | "c" | "d" | "e">;
+export type RunnableScenarioId = Extract<
+  ScenarioId,
+  "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i"
+>;
 
 export interface RunnableScenarioDef extends ScenarioDef {
   id: RunnableScenarioId;
@@ -103,9 +106,92 @@ export const RUNNABLE_SCENARIOS = [
       { kind: "api_refusal", afterAction: "create_paykey" },
     ],
   },
+  {
+    id: "f",
+    label: "F. Closed-account decline",
+    purpose: "Verified customer with an R02 closed-bank-account failure.",
+    flow: [
+      "Create a verified customer and active paykey.",
+      "Create a charge using the closed-bank-account sandbox outcome.",
+      "Poll the charge until the bank decline appears as failed with return code R02.",
+    ],
+    outcomes: {
+      customer: "verified",
+      paykey: "active",
+      charge: "failed_closed_bank_account",
+    },
+    // Deterministic — identical evidence for contract and live (api-notes §P14).
+    requiredObservations: [
+      { kind: "terminal_status", status: "failed", returnCode: "R02" },
+    ],
+  },
+  {
+    id: "g",
+    label: "G. Closed-account reversal",
+    purpose: "Mock/replay reversal evidence with the R02 closed-account code.",
+    flow: [
+      "Create a verified customer and active paykey.",
+      "Create a charge using the closed-account reversal sandbox outcome.",
+      "In mock and replay mode, observe paid first and then reversed so the reversal order is explicit.",
+    ],
+    outcomes: {
+      customer: "verified",
+      paykey: "active",
+      charge: "reversed_closed_bank_account",
+    },
+    requiredObservations: [
+      { kind: "ordered_statuses", statuses: ["paid", "reversed"] },
+    ],
+  },
+  {
+    id: "h",
+    label: "H. Hold and release",
+    purpose: "Manually hold a charge, then release it to settle as paid.",
+    flow: [
+      "Create a verified customer and active paykey.",
+      "Create a charge with the paid outcome, then hold it and observe on_hold.",
+      "Release the hold and poll the resumed charge until it settles as paid.",
+    ],
+    outcomes: { customer: "verified", paykey: "active", charge: "paid" },
+    // Both modes: hold/release verified live (api-notes §P11).
+    requiredObservations: [
+      { kind: "ordered_statuses", statuses: ["on_hold", "paid"] },
+    ],
+  },
+  {
+    id: "i",
+    label: "I. Manual cancel",
+    purpose: "Manually cancel a pre-terminal charge into a real cancelled status.",
+    flow: [
+      "Create a verified customer and active paykey.",
+      "Create a charge that stays pre-terminal awaiting the ACH network.",
+      "Cancel the charge and observe the terminal cancelled status the action produces.",
+    ],
+    // "standard" charges stall pre-terminal (api-notes §P14); the cancel ACTION
+    // is the sole terminator — no sandbox_outcome reaches `cancelled` (§18.8).
+    outcomes: { customer: "verified", paykey: "active", charge: "standard" },
+    // Both modes: manual cancel is a real terminal `cancelled` (api-notes §12.19).
+    requiredObservations: [{ kind: "terminal_status", status: "cancelled" }],
+  },
 ] as const satisfies readonly RunnableScenarioDef[];
 
+/** Every scenario the registry can run (a–i after P2-2). */
 export const RUNNABLE_SCENARIO_IDS = RUNNABLE_SCENARIOS.map((s) => s.id);
+
+/**
+ * The REQUIRED acceptance suite (spec §5): `suite.status` is `passed` iff all of
+ * A–E are covered and passed. Deliberately DISTINCT from the larger runnable set
+ * — F/G/H/I are runnable and reportable but never gate the required suite, so a
+ * report over only A–E still reads `passed` and a report missing F/G/H/I is not
+ * `partial`. This is also the default selection (`--all` / an empty POST body).
+ */
+export const REQUIRED_SCENARIO_IDS = [
+  "a",
+  "b",
+  "c",
+  "d",
+  "e",
+] as const satisfies readonly RunnableScenarioId[];
 
 /**
  * Spec §18.1/§18.8: the live sandbox never surfaces `reversed` (C) or
@@ -135,6 +221,26 @@ const SCENARIO_C_LIVE = ScenarioDefSchema.parse({
   },
   requiredObservations: [
     { kind: "terminal_status", status: "failed", returnCode: "R01" },
+  ],
+}) as RunnableScenarioDef;
+
+const SCENARIO_G_LIVE = ScenarioDefSchema.parse({
+  id: "g",
+  label: "G. Closed-account reversal",
+  purpose:
+    "Live deviation evidence: failed with the R02 closed-account code after the reversal window (spec §18.1 / api-notes §P14).",
+  flow: [
+    "Create a verified customer and active paykey.",
+    "Create a charge using the closed-account reversal sandbox outcome.",
+    "In live mode, the sandbox reports the documented deviation: terminal failed with R02 after the reversal window; paid/reversed never surface.",
+  ],
+  outcomes: {
+    customer: "verified",
+    paykey: "active",
+    charge: "reversed_closed_bank_account",
+  },
+  requiredObservations: [
+    { kind: "terminal_status", status: "failed", returnCode: "R02" },
   ],
 }) as RunnableScenarioDef;
 
@@ -171,6 +277,7 @@ export function getScenario(
 ): RunnableScenarioDef | undefined {
   if (id === "c" && mode === "live") return SCENARIO_C_LIVE;
   if (id === "d" && mode === "live") return SCENARIO_D_LIVE;
+  if (id === "g" && mode === "live") return SCENARIO_G_LIVE;
   return scenarioMap.get(id as RunnableScenarioId);
 }
 
@@ -190,7 +297,10 @@ export function parseScenarioSelection(args: {
   scenarios?: readonly string[];
 }): RunnableScenarioId[] {
   if (args.all || args.scenarios === undefined || args.scenarios.length === 0) {
-    return [...RUNNABLE_SCENARIO_IDS];
+    // Default / `--all` stays the REQUIRED acceptance suite (A–E). F/G/H/I are
+    // runnable only when named explicitly, so the ~15-min budget and the
+    // browser Run All target are unchanged; the report suite gate is A–E too.
+    return [...REQUIRED_SCENARIO_IDS];
   }
   const selected: RunnableScenarioId[] = [];
   for (const raw of args.scenarios) {
