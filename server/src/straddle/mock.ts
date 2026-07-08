@@ -34,6 +34,7 @@ import type { EventBus } from "../engine/bus.js";
 import { createRedactor } from "../redaction.js";
 import type { Redactor } from "../redaction.js";
 import type {
+  ChargeActionOptions,
   ChargeInput,
   ChargeResult,
   ChargeSandboxOutcome,
@@ -238,6 +239,112 @@ export const SCHEDULES = {
       },
     ],
   },
+  // ---- P2-2 (F/G/I) additions — api-notes §P14; §12.18 R02 poisoning ----
+  // F: a SECOND ACH decline beyond B's R01 — closed bank account, R02, ~117 s
+  // (api-notes §P14). Mirrors B's timing; only the reason/code differ.
+  f: {
+    id: "f",
+    description:
+      "failed + R02 (closed bank account): created -> scheduled -> pending -> failed (~117 s)",
+    steps: [
+      { at_ms: 0, status: "created", message: "Charge created." },
+      { at_ms: 3_000, status: "scheduled", message: "Charge scheduled." },
+      {
+        at_ms: 49_000,
+        status: "pending",
+        message: "Payment originated to network.",
+      },
+      {
+        at_ms: 117_000,
+        status: "failed",
+        message: "Payment failed due to a closed bank account.",
+        reason: "closed_bank_account",
+        source: "bank_decline",
+        code: "R02",
+      },
+    ],
+  },
+  // G: the SPEC-CONTRACT reversal shape for the closed-bank-account outcome —
+  // created -> pending -> paid -> reversed (+R02). Like `c`, this is the
+  // paid->reversed story the live sandbox never surfaces (api-notes §P14 / §18.1);
+  // the mock exists so G's ordered observation is demonstrable and testable.
+  g: {
+    id: "g",
+    description:
+      "spec-contract reversal (closed bank account): created -> pending -> paid -> reversed (+R02)",
+    steps: [
+      { at_ms: 0, status: "created", message: "Charge created." },
+      {
+        at_ms: 45_000,
+        status: "pending",
+        message: "Payment originated to network.",
+      },
+      { at_ms: 117_000, status: "paid", message: "Payment settled." },
+      {
+        at_ms: 358_000, // paid + the measured ~241 s reversal-window analog
+        status: "reversed",
+        message: "Payment was reversed due to a closed bank account.",
+        reason: "closed_bank_account",
+        source: "bank_decline",
+        code: "R02",
+      },
+    ],
+  },
+  // G_live: the OBSERVED live reversed_closed_bank_account shape (api-notes §P14):
+  // created -> scheduled -> pending x3 -> failed +R02 at +332 s; never paid/reversed
+  // (same §18.1 deviation as c_live). Selected via explicit chargeSchedule override.
+  g_live: {
+    id: "g_live",
+    description:
+      "observed live reversed_closed_bank_account shape: pending x3 -> failed +R02 at +332 s",
+    steps: [
+      { at_ms: 0, status: "created", message: "Charge created." },
+      { at_ms: 2_600, status: "scheduled", message: "Charge scheduled." },
+      {
+        at_ms: 49_300,
+        status: "pending",
+        message: "Payment originated to network.",
+      },
+      {
+        at_ms: 109_200,
+        status: "pending",
+        message: "Payment posted to the customer's bank.",
+      },
+      {
+        at_ms: 110_000,
+        // Verbatim live message, including Straddle's missing apostrophe.
+        status: "pending",
+        message: "Payment received from the customers bank.",
+      },
+      {
+        at_ms: 332_000,
+        status: "failed",
+        message: "Payment failed due to a closed bank account.",
+        reason: "closed_bank_account",
+        source: "bank_decline",
+        code: "R02",
+      },
+    ],
+  },
+  // I: manual-cancellation base (api-notes §P14). No `sandbox_outcome` reaches a
+  // real terminal `cancelled` (spec §18.8) — only the cancel ACTION does. This
+  // schedule advances to `scheduled` and STALLS there (mirrors the observed
+  // `standard` charge stuck at `scheduled`), staying pre-terminal so the cancel
+  // action is the sole terminator. Selected via explicit chargeSchedule override.
+  i: {
+    id: "i",
+    description:
+      "manual-cancellation base: created -> scheduled, then stalls (awaits ACH); cancel drives the terminal",
+    steps: [
+      { at_ms: 0, status: "created", message: "Charge created." },
+      { at_ms: 3_000, status: "scheduled", message: "Charge scheduled." },
+    ],
+  },
+  // H (hold/release) needs NO dedicated schedule: it is created with
+  // `sandbox_outcome: "paid"` → SCHEDULES.a (created -> scheduled -> pending ->
+  // paid, api-notes §P11), then the hold/release ACTIONS drive the on_hold →
+  // (resume) → paid trajectory. The action methods operate on charge STATE, not
+  // on a scenario id, so no `h` schedule is required.
 } as const satisfies Record<string, ChargeSchedule>;
 
 export type ScheduleId = keyof typeof SCHEDULES;
@@ -254,9 +361,11 @@ export const DEFAULT_SCHEDULE_BY_OUTCOME: Partial<
   standard: SCHEDULES.a,
   paid: SCHEDULES.a,
   failed_insufficient_funds: SCHEDULES.b,
-  failed_closed_bank_account: SCHEDULES.b,
+  // F/G map to the R02 closed-bank-account schedules (api-notes §P14), NOT the
+  // R01 `b`/`c` schedules — the decline code is the teaching point.
+  failed_closed_bank_account: SCHEDULES.f,
   reversed_insufficient_funds: SCHEDULES.c,
-  reversed_closed_bank_account: SCHEDULES.c,
+  reversed_closed_bank_account: SCHEDULES.g,
   cancelled_for_fraud_risk: SCHEDULES.d,
   cancelled_for_balance_check: SCHEDULES.d,
 };
@@ -298,11 +407,31 @@ interface StoredCustomer {
   result: CustomerResult;
 }
 
+/**
+ * A charge's lifecycle phase under the injectable clock:
+ * - "running": following its scripted schedule from `scheduleBaseMs`.
+ * - "held": frozen at `on_hold` by the hold action until released.
+ * - "cancelled": terminated by the cancel action.
+ * Actions mutate this state; getCharge projects the schedule only in "running".
+ */
+type ChargeMode = "running" | "held" | "cancelled";
+
 interface StoredCharge {
   input: ChargeInput;
   createdAtMs: number;
   schedule: ChargeSchedule;
   result_id: string;
+  // -- action-mutable trajectory state (P2-2.1) --
+  mode: ChargeMode;
+  /** Clock time mapped to the schedule's `at_ms=0`; reset to now() on release. */
+  scheduleBaseMs: number;
+  /** History frozen from completed phases (before the active schedule segment
+   *  or a terminal); carries absolute changed_at, immune to base changes. */
+  committedHistory: ChargeStatusHistoryEntry[];
+  /** The on_hold entry while mode === "held". */
+  heldEntry?: ChargeStatusHistoryEntry;
+  /** The terminal cancelled entry while mode === "cancelled". */
+  terminalEntry?: ChargeStatusHistoryEntry;
 }
 
 export function createMockStraddleClient(
@@ -562,11 +691,15 @@ export class MockStraddleClient implements StraddleClient {
       SCHEDULES.a;
     this.chargeCounter += 1;
     const id = `mock-charge-${this.chargeCounter}-${this.context.run_id}`;
+    const createdAtMs = this.clock.now();
     const storedCharge: StoredCharge = {
       input,
-      createdAtMs: this.clock.now(),
+      createdAtMs,
       schedule,
       result_id: id,
+      mode: "running",
+      scheduleBaseMs: createdAtMs,
+      committedHistory: [],
     };
     this.charges.set(id, storedCharge);
     const result = this.chargeSnapshot(storedCharge);
@@ -603,20 +736,230 @@ export class MockStraddleClient implements StraddleClient {
     return result;
   }
 
+  // -- charge lifecycle actions (api-notes §P11) ---------------------------
+
+  async holdCharge(
+    chargeId: string,
+    opts?: ChargeActionOptions,
+  ): Promise<ChargeResult> {
+    const path = `/v1/charges/${chargeId}/hold`;
+    const stored = this.requireCharge("PUT", path, chargeId, opts);
+    const status = this.currentStatus(stored);
+    if (isTerminalStatus(status)) {
+      throw this.refuseActionOnTerminal("PUT", path, status, opts);
+    }
+    // `on_hold` is not terminal but is not re-holdable — an already-held charge
+    // is a 200 no-op (idempotent). A pre-terminal running charge is frozen at
+    // its current projection, then transitioned to on_hold (reason user_request,
+    // source user_action).
+    if (stored.mode !== "held") {
+      stored.committedHistory = this.buildHistory(stored);
+      stored.mode = "held";
+      stored.heldEntry = this.actionEntry(
+        "on_hold",
+        opts?.reason,
+        "Charge held by user request.",
+      );
+    }
+    return this.emitActionResult("PUT", path, stored, opts);
+  }
+
+  async releaseCharge(
+    chargeId: string,
+    opts?: ChargeActionOptions,
+  ): Promise<ChargeResult> {
+    const path = `/v1/charges/${chargeId}/release`;
+    const stored = this.requireCharge("PUT", path, chargeId, opts);
+    const status = this.currentStatus(stored);
+    if (isTerminalStatus(status)) {
+      throw this.refuseActionOnTerminal("PUT", path, status, opts);
+    }
+    if (stored.mode === "held") {
+      // Resume to `created` and re-run the pipeline (NOT straight to paid,
+      // api-notes §12.20): freeze the on_hold into committed history and replay
+      // the schedule from now — so an H scenario ends `paid`.
+      stored.committedHistory = this.buildHistory(stored);
+      stored.mode = "running";
+      stored.heldEntry = undefined;
+      stored.scheduleBaseMs = this.clock.now();
+    }
+    // release on a NOT-held charge is a 200 no-op — status unchanged, not an
+    // error (api-notes §12.20).
+    return this.emitActionResult("PUT", path, stored, opts);
+  }
+
+  async cancelCharge(
+    chargeId: string,
+    opts?: ChargeActionOptions,
+  ): Promise<ChargeResult> {
+    const path = `/v1/charges/${chargeId}/cancel`;
+    const stored = this.requireCharge("PUT", path, chargeId, opts);
+    const status = this.currentStatus(stored);
+    if (isTerminalStatus(status)) {
+      throw this.refuseActionOnTerminal("PUT", path, status, opts);
+    }
+    // Pre-terminal (running OR held): freeze current history, go terminal
+    // `cancelled` (reason user_request, source user_action). Cancelling a held
+    // charge yields history created -> on_hold -> cancelled (api-notes §P11).
+    stored.committedHistory = this.buildHistory(stored);
+    stored.mode = "cancelled";
+    stored.heldEntry = undefined;
+    stored.terminalEntry = this.actionEntry(
+      "cancelled",
+      opts?.reason,
+      "Charge cancelled by user request.",
+    );
+    return this.emitActionResult("PUT", path, stored, opts);
+  }
+
   // -- internals -----------------------------------------------------------
 
-  /** Projects a stored charge onto the schedule at the CURRENT clock time. */
-  private chargeSnapshot(stored: StoredCharge): ChargeResult {
-    const elapsed = this.clock.now() - stored.createdAtMs;
+  private requireCharge(
+    method: string,
+    path: string,
+    chargeId: string,
+    opts: ChargeActionOptions | undefined,
+  ): StoredCharge {
+    const stored = this.charges.get(chargeId);
+    if (stored === undefined) {
+      throw this.refuse({
+        method,
+        path,
+        status: 404,
+        type: "/not_found",
+        title: "Not Found",
+        detail: `Charge ${chargeId} was not found.`,
+        ...(opts?.reason !== undefined
+          ? { requestBody: { reason: opts.reason } }
+          : {}),
+      });
+    }
+    return stored;
+  }
+
+  /**
+   * Any action on a terminal charge → 422 (api-notes §12.20). Modeled as a
+   * business-rule validation error: top-level `error` envelope, message-only,
+   * `items` ABSENT (mirrors the Scenario E refusal shape).
+   */
+  private refuseActionOnTerminal(
+    method: string,
+    path: string,
+    status: ChargeStatus,
+    opts: ChargeActionOptions | undefined,
+  ): MockApiError {
+    return this.refuse({
+      method,
+      path,
+      status: 422,
+      type: "/validation_error",
+      title: "Validation Failed",
+      detail: `Unable to change status of a ${status} payment.`,
+      ...(opts?.reason !== undefined
+        ? { requestBody: { reason: opts.reason } }
+        : {}),
+    });
+  }
+
+  /** Emits the 200 action exchange and returns the updated charge snapshot. */
+  private emitActionResult(
+    method: string,
+    path: string,
+    stored: StoredCharge,
+    opts: ChargeActionOptions | undefined,
+  ): ChargeResult {
+    const result = this.chargeSnapshot(stored);
+    this.emitExchange({
+      method,
+      path,
+      status: 200,
+      // Body is optional; the user-supplied reason is echoed into the
+      // transition's status_details.message (api-notes §P11).
+      ...(opts?.reason !== undefined
+        ? { requestBody: { reason: opts.reason } }
+        : {}),
+      responseBody: { data: result, meta: this.meta(), response_type: "object" },
+    });
+    return result;
+  }
+
+  /** An action-authored transition (on_hold / cancelled). */
+  private actionEntry(
+    status: ChargeStatus,
+    reason: string | undefined,
+    defaultMessage: string,
+  ): ChargeStatusHistoryEntry {
+    return {
+      status,
+      message: reason ?? defaultMessage,
+      reason: "user_request",
+      source: "user_action",
+      changed_at: this.nowIso(),
+    };
+  }
+
+  private currentStatus(stored: StoredCharge): ChargeStatus {
+    const history = this.buildHistory(stored);
+    const last = history[history.length - 1];
+    if (last === undefined) {
+      throw new Error(`mock charge ${stored.result_id} has empty history`);
+    }
+    return last.status;
+  }
+
+  /**
+   * The charge's full EVENT-level status history at the current clock time,
+   * combining phases: committed history (frozen prior segments) + the active
+   * phase (running schedule projection, a held on_hold, or a cancelled terminal).
+   */
+  private buildHistory(stored: StoredCharge): ChargeStatusHistoryEntry[] {
+    if (stored.mode === "cancelled") {
+      if (stored.terminalEntry === undefined) {
+        throw new Error(
+          `mock charge ${stored.result_id} is cancelled without a terminal entry`,
+        );
+      }
+      return [...stored.committedHistory, stored.terminalEntry];
+    }
+    if (stored.mode === "held") {
+      if (stored.heldEntry === undefined) {
+        throw new Error(
+          `mock charge ${stored.result_id} is held without an on_hold entry`,
+        );
+      }
+      return [...stored.committedHistory, stored.heldEntry];
+    }
+    return [...stored.committedHistory, ...this.projectRunning(stored)];
+  }
+
+  /** Schedule-projected entries for the active running segment. */
+  private projectRunning(stored: StoredCharge): ChargeStatusHistoryEntry[] {
+    const elapsed = this.clock.now() - stored.scheduleBaseMs;
     const due = stored.schedule.steps.filter((s) => s.at_ms <= elapsed);
-    // steps[0] is created@0, so `due` is never empty for a created charge.
-    const history: ChargeStatusHistoryEntry[] = due.map((step) => ({
+    return due.map((step) => this.scheduleEntry(stored.scheduleBaseMs, step));
+  }
+
+  private scheduleEntry(
+    baseMs: number,
+    step: ChargeScheduleStep,
+  ): ChargeStatusHistoryEntry {
+    return {
       status: step.status,
-      ...this.stepDetails(stored, step),
-    }));
-    const latestStep = due[due.length - 1];
-    const latestEntry = history[history.length - 1];
-    if (latestStep === undefined || latestEntry === undefined) {
+      message: step.message,
+      reason: step.reason ?? "ok",
+      source: step.source ?? "system",
+      // `code` is ABSENT (not null) when inapplicable (api-notes §8).
+      ...(step.code !== undefined ? { code: step.code } : {}),
+      changed_at: isoAt(baseMs + step.at_ms),
+    };
+  }
+
+  /** Projects a stored charge onto its lifecycle at the CURRENT clock time. */
+  private chargeSnapshot(stored: StoredCharge): ChargeResult {
+    const history = this.buildHistory(stored);
+    // steps[0] is created@0, so history is never empty for a created charge.
+    const latest = history[history.length - 1];
+    if (latest === undefined) {
       throw new Error(
         `mock schedule "${stored.schedule.id}" has no step at offset 0`,
       );
@@ -624,8 +967,8 @@ export class MockStraddleClient implements StraddleClient {
     const { input } = stored;
     return {
       id: stored.result_id,
-      status: latestStep.status,
-      status_details: this.stepDetails(stored, latestStep),
+      status: latest.status,
+      status_details: detailsOf(latest),
       status_history: history,
       amount: input.amount,
       currency: input.currency,
@@ -637,21 +980,7 @@ export class MockStraddleClient implements StraddleClient {
       effective_at: null,
       processed_at: null,
       created_at: isoAt(stored.createdAtMs),
-      updated_at: isoAt(stored.createdAtMs + latestStep.at_ms),
-    };
-  }
-
-  private stepDetails(
-    stored: StoredCharge,
-    step: ChargeScheduleStep,
-  ): StatusDetails {
-    return {
-      message: step.message,
-      reason: step.reason ?? "ok",
-      source: step.source ?? "system",
-      // `code` is ABSENT (not null) when inapplicable (api-notes §8).
-      ...(step.code !== undefined ? { code: step.code } : {}),
-      changed_at: isoAt(stored.createdAtMs + step.at_ms),
+      updated_at: latest.changed_at,
     };
   }
 
@@ -774,4 +1103,28 @@ function maskPaykeyToken(token: string): string {
   const head = token.slice(0, 3);
   const tail = token.slice(-3);
   return `${head}***.01.******${tail}`;
+}
+
+/**
+ * Terminal charge statuses — no lifecycle action can move a charge out of these
+ * (api-notes §12.20). `on_hold` is deliberately NOT terminal (it is releasable).
+ */
+function isTerminalStatus(status: ChargeStatus): boolean {
+  return (
+    status === "paid" ||
+    status === "failed" ||
+    status === "reversed" ||
+    status === "cancelled"
+  );
+}
+
+/** The StatusDetails portion of a history entry (drops the `status` field). */
+function detailsOf(entry: ChargeStatusHistoryEntry): StatusDetails {
+  return {
+    ...(entry.message !== undefined ? { message: entry.message } : {}),
+    reason: entry.reason,
+    source: entry.source,
+    ...(entry.code !== undefined ? { code: entry.code } : {}),
+    changed_at: entry.changed_at,
+  };
 }

@@ -313,6 +313,191 @@ describe("scenarios A, B, D — scripted terminals", () => {
   });
 });
 
+describe("charge lifecycle actions — hold / release / cancel (api-notes §P11)", () => {
+  function actionExchanges(events: RunEvent[]): ApiExchangeEvent[] {
+    return events.filter(
+      (e): e is ApiExchangeEvent =>
+        e.type === "api.exchange" && e.method === "PUT",
+    );
+  }
+
+  it("hold on a pre-terminal charge → on_hold (user_request/user_action), emitting one PUT exchange", async () => {
+    const { client, events, runId } = makeHarness("a");
+    const charge = await createChargeFlow(client, runId, "paid");
+    expect(charge.status).toBe("created");
+
+    const held = await client.holdCharge(charge.id, { reason: "manual review" });
+    expect(held.status).toBe("on_hold");
+    expect(held.status_details?.reason).toBe("user_request");
+    expect(held.status_details?.source).toBe("user_action");
+    // The user-supplied reason is echoed into status_details.message.
+    expect(held.status_details?.message).toBe("manual review");
+    expect(held.status_details?.code).toBeUndefined();
+    // getCharge agrees — the state actually mutated.
+    expect((await client.getCharge(charge.id)).status).toBe("on_hold");
+
+    const puts = actionExchanges(events);
+    expect(puts).toHaveLength(1);
+    expect(puts[0]).toMatchObject({
+      method: "PUT",
+      path: `/v1/charges/${charge.id}/hold`,
+      status: 200,
+      attempt: 1,
+    });
+  });
+
+  it("release after hold resumes to created and eventually settles paid (H shape)", async () => {
+    const { clock, client, events, runId } = makeHarness("a");
+    const charge = await createChargeFlow(client, runId, "paid");
+    await client.holdCharge(charge.id);
+    expect((await client.getCharge(charge.id)).status).toBe("on_hold");
+
+    const released = await client.releaseCharge(charge.id);
+    // Resumes to created — NOT straight to paid (api-notes §12.20).
+    expect(released.status).toBe("created");
+    // history carries the hold: created -> on_hold -> created (resumed).
+    expect(released.status_history.map((h) => h.status)).toEqual([
+      "created",
+      "on_hold",
+      "created",
+    ]);
+
+    // The pipeline carries forward to the schedule's terminal.
+    const { statuses, final } = await pollDistinctStatuses(client, clock, released, {
+      stepMs: 5_000,
+      untilMs: 400_000,
+      terminal: ["paid", "failed", "reversed", "cancelled"],
+    });
+    expect(statuses).toEqual(["created", "scheduled", "pending", "paid"]);
+    expect(final.status).toBe("paid");
+
+    const puts = actionExchanges(events);
+    expect(puts.map((e) => e.path)).toEqual([
+      `/v1/charges/${charge.id}/hold`,
+      `/v1/charges/${charge.id}/release`,
+    ]);
+    for (const e of puts) expect(e.status).toBe(200);
+  });
+
+  it("release on a NOT-held charge is a 200 no-op — status unchanged (api-notes §12.20)", async () => {
+    const { client, events, runId } = makeHarness("a");
+    const charge = await createChargeFlow(client, runId, "paid");
+    expect(charge.status).toBe("created");
+
+    const result = await client.releaseCharge(charge.id);
+    expect(result.status).toBe("created"); // unchanged, not an error
+    expect(result.status_history.map((h) => h.status)).toEqual(["created"]);
+
+    const puts = actionExchanges(events);
+    expect(puts).toHaveLength(1);
+    expect(puts[0]).toMatchObject({
+      path: `/v1/charges/${charge.id}/release`,
+      status: 200,
+    });
+  });
+
+  it("cancel on a pre-terminal charge → terminal cancelled, emitting one PUT exchange", async () => {
+    const { client, events, runId } = makeHarness("i", {
+      chargeSchedule: SCHEDULES.i,
+    });
+    const charge = await createChargeFlow(client, runId, "standard");
+
+    const cancelled = await client.cancelCharge(charge.id, {
+      reason: "customer requested cancellation",
+    });
+    expect(cancelled.status).toBe("cancelled");
+    expect(cancelled.status_details?.reason).toBe("user_request");
+    expect(cancelled.status_details?.source).toBe("user_action");
+    expect(cancelled.status_details?.message).toBe(
+      "customer requested cancellation",
+    );
+    expect(cancelled.status_details?.code).toBeUndefined();
+
+    const puts = actionExchanges(events);
+    expect(puts).toHaveLength(1);
+    expect(puts[0]).toMatchObject({
+      path: `/v1/charges/${charge.id}/cancel`,
+      status: 200,
+    });
+  });
+
+  it("cancel on a held charge yields history created -> on_hold -> cancelled", async () => {
+    const { client, runId } = makeHarness("i", { chargeSchedule: SCHEDULES.i });
+    const charge = await createChargeFlow(client, runId, "standard");
+    await client.holdCharge(charge.id);
+    const cancelled = await client.cancelCharge(charge.id);
+    expect(cancelled.status).toBe("cancelled");
+    expect(cancelled.status_history.map((h) => h.status)).toEqual([
+      "created",
+      "on_hold",
+      "cancelled",
+    ]);
+  });
+
+  it("any action on a TERMINAL charge → 422 (api-notes §12.20)", async () => {
+    const { clock, client, runId } = makeHarness("a");
+    const charge = await createChargeFlow(client, runId, "paid");
+    await clock.advance(200_000);
+    expect((await client.getCharge(charge.id)).status).toBe("paid");
+
+    for (const action of ["hold", "release", "cancel"] as const) {
+      let caught: unknown;
+      try {
+        if (action === "hold") await client.holdCharge(charge.id);
+        else if (action === "release") await client.releaseCharge(charge.id);
+        else await client.cancelCharge(charge.id);
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(MockApiError);
+      const err = caught as MockApiError;
+      expect(err.status).toBe(422);
+      expect(err.retryable).toBe(false);
+      expect(err.path).toBe(`/v1/charges/${charge.id}/${action}`);
+      const body = err.errorBody as { error: Record<string, unknown> };
+      expect(body.error.detail).toBe("Unable to change status of a paid payment.");
+      // Business-rule 422: no field-validation items.
+      expect("items" in body.error).toBe(false);
+    }
+  });
+
+  it("action on an unknown charge id → 404", async () => {
+    const { client } = makeHarness("a");
+    await expect(client.holdCharge("mock-charge-missing")).rejects.toMatchObject({
+      status: 404,
+    });
+  });
+
+  it("F schedule (failed_closed_bank_account) terminates failed with R02 from bank_decline", async () => {
+    const { clock, client, runId } = makeHarness("a");
+    const charge = await createChargeFlow(client, runId, "failed_closed_bank_account");
+    await clock.advance(600_000);
+    const final = await client.getCharge(charge.id);
+    expect(final.status).toBe("failed");
+    expect(final.status_details).toMatchObject({
+      code: "R02",
+      reason: "closed_bank_account",
+      source: "bank_decline",
+    });
+  });
+
+  it("G schedule (reversed_closed_bank_account) demonstrates the paid->reversed contract with R02", async () => {
+    const { clock, client, runId } = makeHarness("a");
+    const charge = await createChargeFlow(client, runId, "reversed_closed_bank_account");
+    const { statuses, final } = await pollDistinctStatuses(client, clock, charge, {
+      stepMs: 5_000,
+      untilMs: 400_000,
+      terminal: ["reversed", "failed"],
+    });
+    expect(statuses).toEqual(["created", "pending", "paid", "reversed"]);
+    expect(final.status_details).toMatchObject({
+      code: "R02",
+      reason: "closed_bank_account",
+      source: "bank_decline",
+    });
+  });
+});
+
 describe("api.exchange telemetry", () => {
   it("emits one attempt-1 exchange per call, with run identity and bus-assigned monotonic seq", async () => {
     const { clock, client, events, runId } = makeHarness("a");

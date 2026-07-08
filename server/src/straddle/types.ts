@@ -320,6 +320,19 @@ export interface ChargeResult {
   updated_at: string;
 }
 
+/**
+ * Options for the charge lifecycle ACTIONS (hold/release/cancel — api-notes
+ * §P11 / deviations §12.19–§12.20). The action endpoints take an OPTIONAL body
+ * `{ reason?: string | null }`; the user-supplied `reason` is echoed verbatim
+ * into `status_details.message` on the resulting transition. `idempotencyKey`
+ * is camelCase because it is NOT a body field — the adapter sends it as the
+ * `Idempotency-Key` header (UUID default, ≤40 chars — api-notes §12 item 9).
+ */
+export interface ChargeActionOptions {
+  reason?: string;
+  idempotencyKey?: string;
+}
+
 // ---------------------------------------------------------------------------
 // The client boundary (spec §6)
 // ---------------------------------------------------------------------------
@@ -340,4 +353,23 @@ export interface StraddleClient {
   createPaykey(input: PaykeyInput): Promise<PaykeyResult>;
   createCharge(input: ChargeInput): Promise<ChargeResult>;
   getCharge(chargeId: string): Promise<ChargeResult>;
+  /**
+   * Charge lifecycle actions (api-notes §P11). All are `PUT
+   * /v1/charges/{id}/{action}` and RETURN THE UPDATED CHARGE:
+   * - hold: pre-terminal, not-held charge → `on_hold` (reason `user_request`,
+   *   source `user_action`).
+   * - release: a held charge → `created` (RESUMES the pipeline, not straight to
+   *   `paid`); a not-held charge → 200 no-op (status unchanged).
+   * - cancel: pre-terminal charge → terminal `cancelled`.
+   * Any action on a TERMINAL charge rejects with a 422 StraddleApiError.
+   */
+  holdCharge(chargeId: string, opts?: ChargeActionOptions): Promise<ChargeResult>;
+  releaseCharge(
+    chargeId: string,
+    opts?: ChargeActionOptions,
+  ): Promise<ChargeResult>;
+  cancelCharge(
+    chargeId: string,
+    opts?: ChargeActionOptions,
+  ): Promise<ChargeResult>;
 }
