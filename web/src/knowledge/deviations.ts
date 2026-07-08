@@ -2,9 +2,11 @@ import type { ScenarioDef } from "@sse/shared";
 
 /**
  * Documented sandbox deviations — the places the live sandbox contradicts
- * Straddle's docs or the original spec assumptions. dev-1…dev-17 mirror
- * api-notes.md §12's numbered list one-to-one; the two dev-gate-* entries
- * carry the Wave 4 live-gate findings recorded in spec §18.8/§18.9.
+ * Straddle's docs or the original spec assumptions. dev-1…dev-22 mirror
+ * api-notes.md §12's numbered list one-to-one (a coverage test enforces the
+ * one-to-one mapping); the two dev-gate-* entries carry the Wave 4 live-gate
+ * findings recorded in spec §18.8/§18.9. dev-18…dev-22 were added by the P2-0
+ * API truth refresh.
  */
 export interface DeviationNote {
   /** Stable id: dev-<n> for api-notes §12 item n. */
@@ -133,6 +135,41 @@ export const DEVIATIONS: readonly DeviationNote[] = [
     detail:
       "GET /v1/charges/{id} returns trace_ids, has_refund, payment_rail, paykey_details, customer_details and more — consumers must tolerate unknown fields.",
     source: "api-notes §4, §12.17",
+  },
+  {
+    id: "dev-18",
+    headline: "R02 poisons a seeded account too — both are now blocked",
+    detail:
+      "A settled failed_closed_bank_account (R02) permanently blocks new paykey creation on that account, just like R05 — so both documented seeded accounts are now blocked on this key. The verified escape: arbitrary never-seeded account numbers create working paykeys, since the outcome is forced by sandbox_outcome rather than the account, so live runs should generate a random per-run account instead of reusing the shared seeded one.",
+    source: "api-notes §5, §12.18",
+  },
+  {
+    id: "dev-19",
+    headline: "The cancel action verb yields a real cancelled status",
+    detail:
+      "No sandbox_outcome reaches cancelled, but the PUT /v1/charges/{id}/cancel action verb produces a genuine terminal cancelled (reason user_request, source user_action) — enabling a true-cancelled teaching scenario the forced outcomes cannot.",
+    source: "api-notes §12.19, spec §18.8",
+  },
+  {
+    id: "dev-20",
+    headline: "Charge action endpoints behave with sharp edges",
+    detail:
+      "hold/release/cancel are live-verified: release resumes to created (not paid); release on a not-held charge is a 200 no-op; any action on a terminal charge is a 422; and two mutations in quick succession can return a transient, retryable 500 (\"Concurrency error for AggregateEventFields\").",
+    source: "api-notes §12.20",
+  },
+  {
+    id: "dev-21",
+    headline: "Payouts are available on this sandbox key",
+    detail:
+      "POST /v1/payouts returns 201 — the spec had treated payouts as an unprobed lane. The create body omits config.balance_check and consent_type (charges-only), while the sandbox_outcome / status / source enums match charges. Lifecycle timing is unmeasured.",
+    source: "api-notes §12.21",
+  },
+  {
+    id: "dev-22",
+    headline: "Webhooks are Svix-style and dashboard-configured",
+    detail:
+      "There is no webhook-management API on the sandbox host — endpoints and signing secrets are created in the dashboard. Signing uses webhook-id / webhook-timestamp / webhook-signature (HMAC-SHA256 over id.timestamp.body, a whsec_-prefixed secret). Charge reversals ride the generic charge.event.v1, not a dedicated event; live delivery is unverified without a public tunnel.",
+    source: "api-notes §12.22, spec §18.1",
   },
   {
     id: "dev-gate-d",
