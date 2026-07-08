@@ -36,6 +36,7 @@ export const RUN_EVENT_TYPES = [
   "retry.scheduled",
   "scenario.assertion",
   "run.completed",
+  "webhook.received",
 ] as const;
 export type RunEventType = (typeof RUN_EVENT_TYPES)[number];
 
@@ -144,6 +145,33 @@ export const RunCompletedEventSchema = z.object({
 });
 export type RunCompletedEvent = z.infer<typeof RunCompletedEventSchema>;
 
+/**
+ * An inbound Straddle webhook that has been CORRELATED to a known run (P2-3.1).
+ *
+ * `eventBase` requires `run_id` + `scenario_id`, so a webhook can only be a
+ * RunEvent once it belongs to a run — uncorrelated or signature-invalid
+ * webhooks are NOT RunEvents (they land in a server-side inbox handled by the
+ * later receiver PR). Verification and match state are FIELDS here, not
+ * separate event types: the per-run stream keys on ONE `webhook.received`
+ * (api-notes §12.22 / §P12 — reversals ride the generic `charge.event.v1`, so
+ * finer-grained webhook.* types don't fit this stream).
+ *
+ * The SIGNING SECRET (`whsec_…`) and the `webhook-id`/`webhook-timestamp`/
+ * `webhook-signature` headers NEVER enter this event — `detail` is the payload
+ * AFTER server-side redaction (spec §8; api-notes §P12 redaction impact).
+ */
+export const WebhookReceivedEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("webhook.received"),
+  event_id: z.string(), // Svix/Straddle webhook id — the dedup key
+  webhook_type: z.string(), // e.g. "charge.event.v1"
+  verified: z.boolean(), // signature verification result
+  resource_id: z.string().optional(), // the charge/customer/paykey id it references
+  delivered_at: LenientDatetimeSchema.optional(),
+  detail: z.unknown().optional(), // redacted payload summary (verbatim post-redaction)
+});
+export type WebhookReceivedEvent = z.infer<typeof WebhookReceivedEventSchema>;
+
 export const RunEventSchema = z.discriminatedUnion("type", [
   RunStartedEventSchema,
   ApiExchangeEventSchema,
@@ -152,5 +180,6 @@ export const RunEventSchema = z.discriminatedUnion("type", [
   RetryScheduledEventSchema,
   ScenarioAssertionEventSchema,
   RunCompletedEventSchema,
+  WebhookReceivedEventSchema,
 ]);
 export type RunEvent = z.infer<typeof RunEventSchema>;
