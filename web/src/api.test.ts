@@ -156,10 +156,6 @@ class FakeEventSource {
   }
 }
 
-async function flush(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-}
-
 function collectingHandlers() {
   const hydrations: RegistrySnapshot[] = [];
   const batches: RunEvent[][] = [];
@@ -407,7 +403,8 @@ describe("event poller", () => {
     expect(server.calls.filter((c) => c.input === "/api/runs")).toHaveLength(1);
   });
 
-  it("uses SSE when available and falls back to polling on EventSource error", async () => {
+  it("uses SSE and reconnects with backoff on a transient drop (not a downgrade)", async () => {
+    vi.useFakeTimers();
     const initial = [started(1, "run-1")];
     const server = fakeServer({
       epoch: "e1",
@@ -415,37 +412,89 @@ describe("event poller", () => {
       events: initial,
     });
     const collected = collectingHandlers();
-    let openedUrl = "";
+    const sources: FakeEventSource[] = [];
+    const urls: string[] = [];
+    const poller = createEventPoller({
+      handlers: collected.handlers,
+      fetchFn: server.fetchFn,
+      eventSourceFactory: (url) => {
+        urls.push(url);
+        const source = new FakeEventSource();
+        sources.push(source);
+        return source as unknown as EventSource;
+      },
+      sseMaxRetries: 3,
+      sseReconnectMinMs: 100,
+    });
+
+    poller.start();
+    await vi.advanceTimersByTimeAsync(0); // hydrate resolves, first source opens
+    expect(urls[0]).toBe("/api/events/stream?since=1");
+    sources[0]?.emit("epoch", { epoch: "e1" });
+    sources[0]?.emit("run-event", statusEvent(3, "run-1", "paid"));
+    expect(poller.cursor()).toBe(3);
+
+    // A drop reconnects SSE (resuming at the cursor) rather than polling.
+    sources[0]?.fail();
+    expect(sources[0]?.closed).toBe(true);
+    expect(server.calls.some((c) => c.input.startsWith("/api/events?since="))).toBe(false);
+    await vi.advanceTimersByTimeAsync(100); // exponential backoff, first step
+    expect(sources).toHaveLength(2);
+    expect(urls[1]).toBe("/api/events/stream?since=3");
+
+    sources[1]?.emit("run-event", statusEvent(5, "run-1", "reversed"));
+    expect(poller.cursor()).toBe(5);
+    poller.stop();
+  });
+
+  it("downgrades to polling after repeated SSE failures, then upgrades back on recovery", async () => {
+    vi.useFakeTimers();
+    const initial = [started(1, "run-1")];
+    const server = fakeServer({
+      epoch: "e1",
+      snapshot: snapshotWith(initial),
+      events: initial,
+    });
+    const collected = collectingHandlers();
     const sources: FakeEventSource[] = [];
     const poller = createEventPoller({
       handlers: collected.handlers,
       fetchFn: server.fetchFn,
       eventSourceFactory: (url) => {
-        openedUrl = url;
+        void url;
         const source = new FakeEventSource();
         sources.push(source);
         return source as unknown as EventSource;
       },
+      intervalMs: 10_000,
+      sseMaxRetries: 2,
+      sseReconnectMinMs: 100,
+      sseUpgradeIntervalMs: 1_000,
     });
 
     poller.start();
-    await flush();
+    await vi.advanceTimersByTimeAsync(0); // source[0]
+    // A live event arrives before the outage, so polling has something to fetch.
+    server.state.events = [...initial, statusEvent(7, "run-1", "paid")];
 
-    expect(openedUrl).toBe("/api/events/stream?since=1");
-    const source = sources[0];
-    expect(source).toBeDefined();
-    source?.emit("epoch", { epoch: "e1" });
-    source?.emit("run-event", statusEvent(3, "run-1", "paid"));
-    expect(collected.batches.at(-1)?.map((event) => event.seq)).toEqual([3]);
-    expect(poller.cursor()).toBe(3);
+    sources[0]?.fail(); // failure 1 → reconnect
+    await vi.advanceTimersByTimeAsync(100);
+    sources[1]?.fail(); // failure 2 → reconnect
+    await vi.advanceTimersByTimeAsync(200);
+    sources[2]?.fail(); // failure 3 > max(2) → downgrade to polling
+    await vi.advanceTimersByTimeAsync(0);
 
-    server.state.events = [...initial, statusEvent(3, "run-1", "paid"), statusEvent(5, "run-1", "reversed")];
-    source?.fail();
-    await flush();
+    const pollCount = () =>
+      server.calls.filter((c) => c.input.startsWith("/api/events?since=")).length;
+    expect(pollCount()).toBeGreaterThanOrEqual(1);
+    expect(collected.batches.at(-1)?.map((e) => e.seq)).toContain(7);
+    const sourcesAfterDowngrade = sources.length;
 
-    expect(source?.closed).toBe(true);
-    expect(server.calls.some((call) => call.input === "/api/events?since=3")).toBe(true);
-    expect(collected.batches.at(-1)?.map((event) => event.seq)).toEqual([5]);
+    // The upgrade timer reconnects SSE; a delivered event proves recovery.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(sources.length).toBeGreaterThan(sourcesAfterDowngrade);
+    sources.at(-1)?.emit("run-event", statusEvent(9, "run-1", "reversed"));
+    expect(poller.cursor()).toBe(9);
     poller.stop();
   });
 });

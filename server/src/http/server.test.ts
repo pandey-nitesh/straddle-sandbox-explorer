@@ -395,6 +395,56 @@ describe("HTTP server", () => {
     expect(response.body).toContain('"epoch":"test-epoch"');
     expect(response.body).toContain("event: run-event");
     expect(response.body).toContain('"type":"run.started"');
+    // Each run-event carries an id: line so a native EventSource can resume via
+    // Last-Event-ID (P2-R.4).
+    expect(response.body).toContain("id: 1\nevent: run-event");
+
+    await app.close();
+  });
+
+  it("resumes an SSE backfill from the Last-Event-ID header (P2-R.4)", async () => {
+    const bus = createBus();
+    const registry = createRunRegistry(bus);
+    bus.emit({
+      type: "run.started",
+      run_id: "run-20260707T120000Z-a-0001",
+      scenario_id: "a",
+      scenario: {
+        id: "a",
+        label: "A. Happy path",
+        purpose: "Charge settles to paid.",
+        outcomes: { customer: "verified", charge: "paid" },
+        requiredObservations: [{ kind: "terminal_status", status: "paid" }],
+      },
+    }); // seq 1
+    bus.emit({
+      type: "payment.status_changed",
+      run_id: "run-20260707T120000Z-a-0001",
+      scenario_id: "a",
+      resource_id: "chg_1",
+      from: null,
+      to: "paid",
+    }); // seq 2
+    const app = await createHttpServer({
+      config: loadConfig({ env: {}, envFilePath: false }),
+      epoch: "test-epoch",
+      bus,
+      registry,
+      mockMode: true,
+      attachRecorder: false,
+      serveStatic: false,
+      logger: false,
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/events/stream?since=0&once=1",
+      headers: { "last-event-id": "1" }, // resume after seq 1 → only seq 2 backfills
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain("id: 2\nevent: run-event");
+    expect(response.body).not.toContain("id: 1\nevent: run-event");
 
     await app.close();
   });
