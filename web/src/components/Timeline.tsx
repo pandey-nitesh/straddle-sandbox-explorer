@@ -59,6 +59,11 @@ const DOT_BASE = "absolute top-0.5 -left-[27px] size-3 rounded-full";
 function NodeDot({ kind, pulsing }: { kind: TimelineNodeKind; pulsing: boolean }) {
   switch (kind) {
     case "inflight":
+      // The slate inflight color deliberately covers every non-terminal state
+      // (design §3): created / scheduled / pending / on_hold. `on_hold` is a
+      // first-class member here — a hold that will resume — never a default
+      // fallthrough (design §12.3), and its filled slate dot reads distinctly
+      // from cancelled's hollow ring below.
       return <span data-testid="dot" className={`${DOT_BASE} bg-status-inflight`} />;
     case "provisional":
       // Half-filled amber dot (◍); the pulse class is present only while the
