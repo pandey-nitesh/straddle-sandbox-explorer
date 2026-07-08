@@ -45,6 +45,15 @@ export interface RunOptions {
   clientFactory?: (context: RunContext) => StraddleClient;
   /** Called synchronously after run IDs are allocated, before work awaits. */
   onRunIds?: (runIds: string[]) => void;
+  /**
+   * Interrupt-safe shutdown (P2-R.2). When aborted mid-suite the runner stops
+   * starting new scenarios, snapshots the report from whatever evidence exists,
+   * and returns `interrupted: true` — it NEVER fabricates a `run.completed` for
+   * an unfinished run, so interrupted runs stay `partial` (spec §5). In-flight
+   * concurrent runs are abandoned, not awaited; their recordings are valid
+   * prefixes (spec §11) and reappear as `partial` on the next boot (P2-R.1).
+   */
+  signal?: AbortSignal;
 }
 
 export interface RunContext {
@@ -58,6 +67,8 @@ export interface RunSuiteResult {
   runIds: string[];
   reportPath?: string;
   report?: Report;
+  /** True when the suite was aborted (P2-R.2) before every run finished. */
+  interrupted: boolean;
 }
 
 interface ScenarioEvidence {
@@ -105,13 +116,28 @@ export async function runScenarios(options: RunOptions): Promise<RunSuiteResult>
   options.onRunIds?.([...runIds]);
 
   let report: Report | undefined;
+  let interrupted = false;
   try {
     if (options.concurrency === "serial") {
-      for (const task of tasks) await task();
+      for (const task of tasks) {
+        if (options.signal?.aborted === true) {
+          interrupted = true;
+          break;
+        }
+        await task();
+      }
+    } else if (options.signal !== undefined) {
+      interrupted = await raceUntilAbortOrDone(
+        Promise.all(tasks.map((task) => task())),
+        options.signal,
+      );
     } else {
       await Promise.all(tasks.map((task) => task()));
     }
 
+    // On interruption we still write a report — a snapshot of the partial
+    // evidence, in which unfinished runs are `partial` (buildReport keys off
+    // the absence of run.completed). We never manufacture a completion.
     if (options.reportPath !== undefined) {
       report = buildReport(collectedEvents, {
         recordingDir,
@@ -130,8 +156,32 @@ export async function runScenarios(options: RunOptions): Promise<RunSuiteResult>
   return {
     runIds,
     reportPath: options.reportPath,
+    interrupted,
     ...(report !== undefined ? { report } : {}),
   };
+}
+
+/**
+ * Resolve `true` if `signal` aborts before `work` settles, else `false`.
+ * `work` (the concurrent scenario batch) never rejects — runOneScenario
+ * captures its own errors — but we defensively swallow so an abandoned,
+ * still-pending batch cannot surface an unhandled rejection after we've
+ * already resolved on abort.
+ */
+function raceUntilAbortOrDone(
+  work: Promise<unknown>,
+  signal: AbortSignal,
+): Promise<boolean> {
+  work.catch(() => undefined);
+  if (signal.aborted) return Promise.resolve(true);
+  return new Promise<boolean>((resolve) => {
+    const onAbort = (): void => resolve(true);
+    signal.addEventListener("abort", onAbort, { once: true });
+    void work.then(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve(false);
+    });
+  });
 }
 
 async function runOneScenario(args: {

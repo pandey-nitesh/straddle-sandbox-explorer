@@ -86,6 +86,90 @@ describe("runner", () => {
     });
     expect(new Set(names).size).toBe(names.length);
   });
+
+  it("abandons in-flight work on abort, snapshots a partial report, never fabricates completion", async () => {
+    const clock = new FakeClock(Date.parse("2026-07-07T12:00:00.000Z"));
+    const bus = createBus({ now: () => new Date(clock.now()) });
+    const dir = mkdtempSync(path.join(tmpdir(), "straddle-runner-abort-"));
+    const runsDir = path.join(dir, "runs");
+    const reportPath = path.join(dir, "report.json");
+    attachRecorder(bus, runsDir);
+    const abort = new AbortController();
+
+    const task = runScenarios({
+      scenarios: ["a"],
+      concurrency: "concurrent",
+      bus,
+      clock,
+      recordingDir: runsDir,
+      reportPath,
+      signal: abort.signal,
+      pollPolicy: {
+        baseMinMs: 5_000,
+        baseMaxMs: 5_000,
+        fastMs: 5_000,
+        hardTimeoutMs: 600_000,
+      },
+      clientFactory: (context) =>
+        createMockStraddleClient({
+          bus,
+          clock,
+          context: { run_id: context.run_id, scenario_id: context.scenario_id },
+        }),
+    });
+
+    // Let the run reach its first poll sleep (still mid-lifecycle, not
+    // terminal), then interrupt WITHOUT advancing the clock.
+    await waitForSleepers(clock);
+    abort.abort();
+    const result = await task;
+
+    expect(result.interrupted).toBe(true);
+    const report = ReportSchema.parse(JSON.parse(readFileSync(reportPath, "utf8")));
+    const scenarioA = report.scenarios.find((s) => s.id === "a");
+    expect(scenarioA?.status).toBe("partial");
+    expect(report.suite.status).toBe("partial");
+
+    // The recording is a valid prefix with no manufactured completion.
+    const runId = result.runIds[0];
+    const recording = readFileSync(path.join(runsDir, `${runId}.jsonl`), "utf8");
+    const events = recording
+      .split("\n")
+      .filter((line) => line.length > 0)
+      .map((line) => JSON.parse(line) as RunEvent);
+    expect(events.some((e) => e.type === "run.started")).toBe(true);
+    expect(events.some((e) => e.type === "run.completed")).toBe(false);
+  });
+
+  it("stops before starting new work when already aborted (serial)", async () => {
+    const clock = new FakeClock(Date.parse("2026-07-07T12:00:00.000Z"));
+    const bus = createBus({ now: () => new Date(clock.now()) });
+    const events: RunEvent[] = [];
+    bus.subscribe((event) => events.push(event));
+    const dir = mkdtempSync(path.join(tmpdir(), "straddle-runner-preabort-"));
+    const abort = new AbortController();
+    abort.abort(); // aborted before the suite even starts
+
+    const result = await runScenarios({
+      scenarios: ["a", "b"],
+      concurrency: "serial",
+      bus,
+      clock,
+      recordingDir: path.join(dir, "runs"),
+      reportPath: path.join(dir, "report.json"),
+      signal: abort.signal,
+      clientFactory: (context) =>
+        createMockStraddleClient({
+          bus,
+          clock,
+          context: { run_id: context.run_id, scenario_id: context.scenario_id },
+        }),
+    });
+
+    expect(result.interrupted).toBe(true);
+    // No scenario ever started — nothing new was launched after the abort.
+    expect(events.some((e) => e.type === "run.started")).toBe(false);
+  });
 });
 
 async function waitForSleepers(clock: FakeClock): Promise<void> {

@@ -6,7 +6,7 @@ import { RunEventSchema } from "@sse/shared";
 import type { RunEvent, ScenarioId } from "@sse/shared";
 import { createBus } from "./bus.js";
 import type { EventBus, UnsequencedRunEvent } from "./bus.js";
-import { attachRecorder, recordingPathFor } from "./recorder.js";
+import { attachRecorder, createRecorder, recordingPathFor } from "./recorder.js";
 
 const RUN_A = "run-20260707T120000Z-a-ab12";
 const RUN_C = "run-20260707T120001Z-c-cd34";
@@ -152,6 +152,22 @@ describe("attachRecorder", () => {
     detach();
     bus.emit(statusChanged(RUN_A, "a", "paid"));
 
+    expect(readRecording(recordingPathFor(dir, RUN_A))).toHaveLength(1);
+  });
+
+  it("exposes a flush + detach handle (createRecorder) that flushes after every write", async () => {
+    const dir = tempDir();
+    const bus = createBus();
+    const recorder = createRecorder(bus, dir);
+
+    bus.emit(statusChanged(RUN_A, "a", "created"));
+    // Synchronous appends mean the event is already durable; flush makes that
+    // guarantee explicit for graceful shutdown and must resolve.
+    await expect(recorder.flush()).resolves.toBeUndefined();
+    expect(readRecording(recordingPathFor(dir, RUN_A))).toHaveLength(1);
+
+    recorder.detach();
+    bus.emit(statusChanged(RUN_A, "a", "paid"));
     expect(readRecording(recordingPathFor(dir, RUN_A))).toHaveLength(1);
   });
 

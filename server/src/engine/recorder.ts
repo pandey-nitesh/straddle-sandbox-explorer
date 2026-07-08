@@ -41,21 +41,49 @@ export function recordingPathFor(dir: string, runId: string): string {
   return path.join(dir, `${runId}.jsonl`);
 }
 
+export interface RecorderHandle {
+  /** Unsubscribe from the bus — no writes after this returns. */
+  detach(): void;
+  /**
+   * Resolve once every event emitted so far is durably on disk (P2-R.2
+   * shutdown seam). With the synchronous `appendFileSync` writer this holds the
+   * instant an `emit` returns, so `flush` resolves immediately — its value is
+   * making the guarantee EXPLICIT: a graceful shutdown awaits it before writing
+   * a final report and exiting, rather than relying on the invariant
+   * incidentally. (P2-R.3 extends the recorder with failure handling behind
+   * this same handle.)
+   */
+  flush(): Promise<void>;
+}
+
 /**
- * Subscribes a JSONL recorder to the bus. Creates `dir` (recursively) if
- * absent at attach time. Returns the unsubscribe function (detach).
+ * Subscribes a JSONL recorder to the bus and returns a handle (detach + flush).
+ * Creates `dir` (recursively) if absent at attach time.
  *
  * Recorder write failures (disk full, dir removed mid-run) throw from the
  * subscriber and are handled by the bus's subscriber-isolation policy — they
  * are reported via `onSubscriberError` and never break other subscribers.
  */
-export function attachRecorder(bus: EventBus, dir: string): () => void {
+export function createRecorder(bus: EventBus, dir: string): RecorderHandle {
   mkdirSync(dir, { recursive: true });
-  return bus.subscribe((event: RunEvent) => {
+  const detach = bus.subscribe((event: RunEvent) => {
     appendFileSync(
       recordingPathFor(dir, event.run_id),
       `${JSON.stringify(event)}\n`,
       "utf8",
     );
   });
+  return {
+    detach,
+    flush: () => Promise.resolve(),
+  };
+}
+
+/**
+ * Back-compatible wrapper: subscribes a recorder and returns just the
+ * unsubscribe function, as before. New callers that need `flush` (graceful
+ * shutdown) use {@link createRecorder} for the full handle.
+ */
+export function attachRecorder(bus: EventBus, dir: string): () => void {
+  return createRecorder(bus, dir).detach;
 }
