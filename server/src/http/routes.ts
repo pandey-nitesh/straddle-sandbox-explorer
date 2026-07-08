@@ -137,6 +137,12 @@ export async function registerRoutes(
       return reply.code(400).send({ error: "since must be a non-negative integer" });
     }
     const since = Number.parseInt(rawSince, 10);
+    // The client's cursor predates the evicted delivery window (P2-R.5): the
+    // gap can't be served incrementally, so tell it to re-hydrate rather than
+    // hand back a partial tail it would mistake for the full delta.
+    if (options.registry.resyncNeeded(since)) {
+      return { epoch: options.epoch, resync: true, events: [] };
+    }
     return {
       epoch: options.epoch,
       events: options.registry.eventsSince(since),

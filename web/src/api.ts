@@ -58,6 +58,12 @@ export interface RegistrySnapshot {
 export interface EventsResponse {
   epoch: string;
   events: RunEvent[];
+  /**
+   * P2-R.5: the server evicted events at/below the requested cursor, so this
+   * delta is incomplete — the client must re-hydrate from GET /api/runs instead
+   * of trusting `events`.
+   */
+  resync?: boolean;
 }
 
 /** POST /api/runs 202 body. */
@@ -362,6 +368,13 @@ export function createEventPoller(options: EventPollerOptions): EventPoller {
         // Server restarted: the cursor and all downstream state belong to a
         // dead epoch. Drop this batch (the fresh snapshot supersedes it),
         // clear, re-hydrate (spec §3).
+        invalidate();
+        await hydrate();
+        return;
+      }
+      if (response.resync === true) {
+        // The server evicted events past our cursor (P2-R.5): re-hydrate from
+        // the snapshot rather than silently skipping the gap.
         invalidate();
         await hydrate();
         return;
