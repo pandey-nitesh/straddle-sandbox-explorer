@@ -1,16 +1,20 @@
 import { createBus } from "./engine/bus.js";
 import { createRecorder } from "./engine/recorder.js";
 import { runScenarios } from "./engine/runner.js";
+import type { RunContext } from "./engine/runner.js";
+import { runPayoutSuite } from "./engine/payout.js";
 import { parseScenarioSelection } from "./engine/scenarios.js";
 import { loadConfig } from "./config.js";
 import { createStraddleClient } from "./straddle/client.js";
 import { createMockStraddleClient } from "./straddle/mock.js";
+import type { StraddleClient } from "./straddle/types.js";
 
 interface CliArgs {
   all: boolean;
   scenarios: string[];
   serial: boolean;
   mock: boolean;
+  payout: boolean;
   reportPath: string;
   recordingDir: string;
 }
@@ -61,37 +65,48 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
 
+  const clientFactory = (context: RunContext): StraddleClient =>
+    args.mock
+      ? createMockStraddleClient({
+          bus,
+          clock: context.clock,
+          context: {
+            run_id: context.run_id,
+            scenario_id: context.scenario_id,
+          },
+        })
+      : createStraddleClient({
+          apiKey: config.straddleApiKey ?? "",
+          bus,
+          clock: context.clock,
+          context: {
+            run_id: context.run_id,
+            scenario_id: context.scenario_id,
+          },
+        });
+
   let result;
   try {
-    result = await runScenarios({
-      scenarios: scenarioIds,
-      concurrency: args.serial ? "serial" : "concurrent",
-      bus,
-      recordingDir: args.recordingDir,
-      reportPath: args.reportPath,
-      pollPolicy: config.pollPolicyOverrides,
-      mode: args.mock ? "contract" : "live",
-      signal: abort.signal,
-      clientFactory: (context) =>
-        args.mock
-          ? createMockStraddleClient({
-              bus,
-              clock: context.clock,
-              context: {
-                run_id: context.run_id,
-                scenario_id: context.scenario_id,
-              },
-            })
-          : createStraddleClient({
-              apiKey: config.straddleApiKey ?? "",
-              bus,
-              clock: context.clock,
-              context: {
-                run_id: context.run_id,
-                scenario_id: context.scenario_id,
-              },
-            }),
-    });
+    result = args.payout
+      ? await runPayoutSuite({
+          bus,
+          recordingDir: args.recordingDir,
+          reportPath: args.reportPath,
+          pollPolicy: config.pollPolicyOverrides,
+          signal: abort.signal,
+          clientFactory,
+        })
+      : await runScenarios({
+          scenarios: scenarioIds,
+          concurrency: args.serial ? "serial" : "concurrent",
+          bus,
+          recordingDir: args.recordingDir,
+          reportPath: args.reportPath,
+          pollPolicy: config.pollPolicyOverrides,
+          mode: args.mock ? "contract" : "live",
+          signal: abort.signal,
+          clientFactory,
+        });
   } finally {
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
@@ -139,6 +154,7 @@ function parseArgs(argv: readonly string[]): CliArgs {
     scenarios: [],
     serial: false,
     mock: false,
+    payout: false,
     reportPath: "report.json",
     recordingDir: "runs",
   };
@@ -159,6 +175,9 @@ function parseArgs(argv: readonly string[]): CliArgs {
         break;
       case "--mock":
         out.mock = true;
+        break;
+      case "--payout":
+        out.payout = true;
         break;
       case "--report": {
         const value = argv[++i];
@@ -184,11 +203,13 @@ function parseArgs(argv: readonly string[]): CliArgs {
 }
 
 function printHelp(): void {
-  console.log(`Usage: npm run scenarios -- [--all | --scenario a] [--mock] [--serial]
+  console.log(`Usage: npm run scenarios -- [--all | --scenario a | --payout] [--mock] [--serial]
 
 Options:
   --all                  Run A-E (default when no --scenario is passed)
   --scenario <id>        Run one scenario; repeatable
+  --payout               Run the payout lane (create -> observe -> report) instead
+                         of the A-E scenarios; mock-first (spec P2-4 / api-notes §P13)
   --mock                 Use the scripted mock client instead of the live sandbox
   --serial               Run scenarios serially (P1 behavior, useful for debugging)
   --report <path>        Report output path (default: report.json)

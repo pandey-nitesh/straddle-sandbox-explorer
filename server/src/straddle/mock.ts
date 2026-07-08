@@ -50,6 +50,8 @@ import type {
   HealthResult,
   PaykeyInput,
   PaykeyResult,
+  PayoutInput,
+  PayoutResult,
   StatusDetails,
   StraddleClient,
 } from "./types.js";
@@ -416,6 +418,19 @@ interface StoredCustomer {
  */
 type ChargeMode = "running" | "held" | "cancelled";
 
+/**
+ * A payout's stored state (P2-4 / api-notes §P13). Payouts are money OUT and
+ * charge-shaped, but this lane only creates + observes (no hold/release/cancel
+ * actions), so the state is simpler than StoredCharge: a schedule projected from
+ * `createdAtMs`, no action-mutable trajectory.
+ */
+interface StoredPayout {
+  input: PayoutInput;
+  createdAtMs: number;
+  schedule: ChargeSchedule;
+  result_id: string;
+}
+
 interface StoredCharge {
   input: ChargeInput;
   createdAtMs: number;
@@ -451,11 +466,14 @@ export class MockStraddleClient implements StraddleClient {
   private customerCounter = 0;
   private paykeyCounter = 0;
   private chargeCounter = 0;
+  private payoutCounter = 0;
 
   private readonly customers = new Map<string, StoredCustomer>();
   private readonly paykeysByToken = new Map<string, PaykeyResult>();
   private readonly charges = new Map<string, StoredCharge>();
   private readonly usedChargeExternalIds = new Set<string>();
+  private readonly payouts = new Map<string, StoredPayout>();
+  private readonly usedPayoutExternalIds = new Set<string>();
 
   constructor(options: MockStraddleClientOptions) {
     this.bus = options.bus;
@@ -734,6 +752,132 @@ export class MockStraddleClient implements StraddleClient {
       responseBody: { data: result, meta: this.meta(), response_type: "object" },
     });
     return result;
+  }
+
+  // -- payouts (P2-4 / api-notes §P13) -------------------------------------
+
+  async createPayout(input: PayoutInput): Promise<PayoutResult> {
+    const path = "/v1/payouts";
+    if (!this.paykeysByToken.has(input.paykey)) {
+      // Payouts require the paykey TOKEN, never the paykey id — same as charges.
+      throw this.refuse({
+        method: "POST",
+        path,
+        status: 422,
+        type: "/validation_error",
+        title: "Validation Failed",
+        detail: "Unknown paykey.",
+        items: [{ reference: "paykey", detail: "Unknown paykey token." }],
+        requestBody: input,
+      });
+    }
+    if (this.usedPayoutExternalIds.has(input.external_id)) {
+      // external_id must be unique across all payouts (api-notes §P13).
+      throw this.refuse({
+        method: "POST",
+        path,
+        status: 422,
+        type: "/validation_error",
+        title: "Validation Failed",
+        detail: "external_id must be unique across payouts.",
+        items: [
+          { reference: "external_id", detail: "external_id already used." },
+        ],
+        requestBody: input,
+      });
+    }
+    this.usedPayoutExternalIds.add(input.external_id);
+
+    // Payout sandbox_outcome enum is identical to charges, so the same
+    // schedules apply (api-notes §P13). Default to SCHEDULES.a (paid ~117 s).
+    const schedule =
+      this.chargeScheduleOverride ??
+      (input.config?.sandbox_outcome !== undefined
+        ? DEFAULT_SCHEDULE_BY_OUTCOME[input.config.sandbox_outcome]
+        : undefined) ??
+      SCHEDULES.a;
+    this.payoutCounter += 1;
+    const id = `mock-payout-${this.payoutCounter}-${this.context.run_id}`;
+    const stored: StoredPayout = {
+      input,
+      createdAtMs: this.clock.now(),
+      schedule,
+      result_id: id,
+    };
+    this.payouts.set(id, stored);
+    const result = this.payoutSnapshot(stored);
+    this.emitExchange({
+      method: "POST",
+      path,
+      status: 201,
+      requestBody: input,
+      responseBody: { data: result, meta: this.meta(), response_type: "object" },
+    });
+    return result;
+  }
+
+  async getPayout(payoutId: string): Promise<PayoutResult> {
+    const path = `/v1/payouts/${payoutId}`;
+    const stored = this.payouts.get(payoutId);
+    if (stored === undefined) {
+      throw this.refuse({
+        method: "GET",
+        path,
+        status: 404,
+        type: "/not_found",
+        title: "Not Found",
+        detail: `Payout ${payoutId} was not found.`,
+      });
+    }
+    const result = this.payoutSnapshot(stored);
+    this.emitExchange({
+      method: "GET",
+      path,
+      status: 200,
+      responseBody: { data: result, meta: this.meta(), response_type: "object" },
+    });
+    return result;
+  }
+
+  /** Schedule-projected event-level history for a payout at the current clock. */
+  private payoutHistory(stored: StoredPayout): ChargeStatusHistoryEntry[] {
+    const elapsed = this.clock.now() - stored.createdAtMs;
+    const due = stored.schedule.steps.filter((s) => s.at_ms <= elapsed);
+    return due.map((step) => this.scheduleEntry(stored.createdAtMs, step));
+  }
+
+  /** Projects a stored payout onto its lifecycle at the CURRENT clock time. */
+  private payoutSnapshot(stored: StoredPayout): PayoutResult {
+    const history = this.payoutHistory(stored);
+    const latest = history[history.length - 1];
+    if (latest === undefined) {
+      throw new Error(
+        `mock payout schedule "${stored.schedule.id}" has no step at offset 0`,
+      );
+    }
+    const { input } = stored;
+    return {
+      id: stored.result_id,
+      status: latest.status,
+      status_details: detailsOf(latest),
+      status_history: history,
+      amount: input.amount,
+      currency: input.currency,
+      description: input.description,
+      external_id: input.external_id,
+      payment_date: input.payment_date,
+      // Live payout responses mask the token server-side; mirror that.
+      paykey: maskPaykeyToken(input.paykey),
+      // Payout-only keys (api-notes §P13) — non-sensitive; present so the DTO's
+      // tolerate-extras path is exercised and the UI/report can inspect them.
+      funding_ids: [],
+      is_refund: false,
+      is_resubmit: false,
+      has_resubmit: false,
+      trace_ids: [`mock-trace-${stored.result_id}`],
+      created_at: isoAt(stored.createdAtMs),
+      updated_at: latest.changed_at,
+    };
   }
 
   // -- charge lifecycle actions (api-notes §P11) ---------------------------

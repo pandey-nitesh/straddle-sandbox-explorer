@@ -192,6 +192,52 @@ describe("redactValue / redactBody — field-name masking at any depth", () => {
     expectZeroSurvivals(out);
   });
 
+  it("masks the paykey, device, and bank fields in a payout response, keeping payout-only keys (api-notes §P13)", () => {
+    const response = {
+      data: {
+        id: "0197a1b2-fake-payout",
+        status: "paid",
+        amount: 5000,
+        currency: "USD",
+        description: "sandbox payout",
+        external_id: "run-20260707T120000Z-a-ab12",
+        payment_date: "2026-07-07",
+        paykey: FAKE_PAYKEY_TOKEN, // masked server-side live; we mask regardless
+        device: { ip_address: "203.0.113.9" },
+        // Payout-only keys — non-sensitive, must survive (api-notes §P13).
+        funding_ids: ["fund_abc"],
+        is_refund: false,
+        is_resubmit: false,
+        has_resubmit: false,
+        trace_ids: ["trace_1"],
+        // An error-echo shape that some payout bodies carry — account/routing
+        // must be caught by field name even nested here.
+        bank_data: {
+          routing_number: SEEDED_BANK.routing_number,
+          account_number: FAKE_ACCOUNT,
+          account_type: "checking",
+        },
+        status_history: [
+          { status: "created", reason: "ok", source: "system", changed_at: "2026-07-07T12:00:00Z" },
+          { status: "paid", reason: "ok", source: "system", changed_at: "2026-07-07T12:02:00Z" },
+        ],
+      },
+      meta: { api_request_id: "req-payout-1" },
+      response_type: "object",
+    };
+    const out = redactor.redactValue(response) as typeof response;
+    expect(out.data.paykey).toBe("[redacted]");
+    expect(out.data.device.ip_address).toBe("[redacted]");
+    expect(out.data.bank_data.routing_number).toBe("•••0021");
+    expect(out.data.bank_data.account_number).toBe("•••1222");
+    // Payout-only keys survive untouched (non-credential sandbox evidence).
+    expect(out.data.funding_ids).toEqual(["fund_abc"]);
+    expect(out.data.is_refund).toBe(false);
+    expect(out.data.trace_ids).toEqual(["trace_1"]);
+    expect(out.data.external_id).toBe("run-20260707T120000Z-a-ab12");
+    expectZeroSurvivals(out, [FAKE_ACCOUNT, "203.0.113.9"]);
+  });
+
   it("preserves non-credential sandbox evidence in a customer create body", () => {
     const body = {
       name: "Test Person",

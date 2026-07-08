@@ -334,6 +334,59 @@ export interface ChargeActionOptions {
 }
 
 // ---------------------------------------------------------------------------
+// Payouts (POST /v1/payouts — api-notes §P13). A payout is money OUT and is
+// charge-SHAPED: it reuses ChargeStatus / ChargeStatusHistoryEntry /
+// StatusDetails / ChargeSandboxOutcome verbatim (the sandbox enums are
+// identical to charges). Two things DIFFER from charges, both in the create
+// body: there is NO `config.balance_check` and NO `consent_type` (both are
+// charges-only), so the §8 balance-check trap does not apply to payouts. The
+// response mirrors ChargeV1 plus a handful of payout-only keys (`funding_ids`,
+// `is_refund`, `is_resubmit`, `has_resubmit`, `trace_ids`); DTO mappers pick the
+// known fields and TOLERATE the extras (api-notes §12 extensibility rule).
+// `paykey` comes back MASKED (like charges) but is redacted anyway. Lifecycle
+// timing is UNMEASURED (api-notes §P13) — this is a mock-first lane (spec P2-4).
+// ---------------------------------------------------------------------------
+
+export interface PayoutInput {
+  paykey: string; // the TOKEN from the bridge create response, not the paykey id
+  amount: number; // integer cents (10000 = $100.00)
+  currency: "USD"; // exactly "USD"
+  description: string;
+  device: DeviceInfo;
+  external_id: string; // must be unique across all payouts — run_id works
+  payment_date: string; // YYYY-MM-DD
+  // NO `balance_check`, NO `consent_type` — those are charges-only (api-notes §P13).
+  config?: {
+    sandbox_outcome?: ChargeSandboxOutcome; // identical enum to charges
+    processing_method?: ProcessingMethod;
+  };
+  metadata?: Record<string, string>;
+  idempotencyKey?: string;
+}
+
+export interface PayoutResult {
+  id: string;
+  status: ChargeStatus;
+  status_details?: StatusDetails;
+  status_history: ChargeStatusHistoryEntry[];
+  amount: number;
+  currency: string;
+  description?: string;
+  external_id: string; // echoed verbatim — carries the run_id
+  payment_date?: string;
+  paykey?: string; // masked by the server in payout responses; redact anyway
+  // Payout-only keys (api-notes §P13) — non-sensitive; mappers must tolerate
+  // them (they never appear on charges) without failing a parse.
+  funding_ids?: string[];
+  is_refund?: boolean;
+  is_resubmit?: boolean;
+  has_resubmit?: boolean;
+  trace_ids?: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+// ---------------------------------------------------------------------------
 // The client boundary (spec §6)
 // ---------------------------------------------------------------------------
 
@@ -372,4 +425,14 @@ export interface StraddleClient {
     chargeId: string,
     opts?: ChargeActionOptions,
   ): Promise<ChargeResult>;
+  /**
+   * Payouts — money OUT (api-notes §P13). `createPayout` POSTs `/v1/payouts`;
+   * `getPayout` GETs `/v1/payouts/{id}`. The result is charge-shaped minus the
+   * balance_check/consent_type inputs. Lifecycle timing is UNMEASURED — this is
+   * a mock-first CLI/teaching lane (spec P2-4); the default flow settles a
+   * payout against the scripted mock. Both reject with StraddleApiError on
+   * failure, exactly like the charge methods.
+   */
+  createPayout(input: PayoutInput): Promise<PayoutResult>;
+  getPayout(payoutId: string): Promise<PayoutResult>;
 }
