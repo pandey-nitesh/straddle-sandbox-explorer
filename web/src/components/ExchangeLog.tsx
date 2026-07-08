@@ -2,6 +2,7 @@ import { useState } from "react";
 import { CopyValueButton } from "./CopyValueButton";
 import { JsonBlock } from "./JsonBlock";
 import { formatBackoff } from "./format";
+import { toCurl, type CurlExchange } from "../lib/curl";
 
 /**
  * Wire log (design §6.3): chronological redacted exchanges for the selected
@@ -44,6 +45,27 @@ export interface ExchangeFieldNote {
 
 export interface ExchangeLogProps {
   entries: ExchangeEntry[];
+}
+
+/**
+ * "Copy as cURL" (design §6.3/§9): mirrors the CopyValueButton visual variant
+ * (no new button style) and clipboard pattern. The command is built lazily from
+ * the redacted exchange — placeholder auth only, never a secret (see lib/curl).
+ */
+function CopyCurlButton({ exchange }: { exchange: CurlExchange }) {
+  return (
+    <button
+      type="button"
+      aria-label="Copy as cURL"
+      title="Copy as cURL"
+      className="chip-transition shrink-0 rounded-inset border border-edge bg-surface-card px-2 py-1 text-[0.6875rem] font-medium text-fg-muted hover:border-edge-strong hover:text-fg"
+      onClick={() => {
+        void navigator.clipboard.writeText(toCurl(exchange));
+      }}
+    >
+      Copy as cURL
+    </button>
+  );
 }
 
 function StatusCodeChip({ status }: { status: number }) {
@@ -93,6 +115,7 @@ function Exchange({ entry }: { entry: ExchangeEntry }) {
           </span>
         </button>
         <CopyValueButton label="path" value={entry.path} />
+        <CopyCurlButton exchange={entry} />
       </div>
 
       {/* Retry attempts as indented sub-entries — the client's 429/5xx

@@ -102,6 +102,23 @@ describe("ExchangeLog", () => {
     expect(block?.parentElement?.className).toContain("bg-surface-inset");
   });
 
+  it("copies a placeholder-authenticated cURL command per row", () => {
+    const writeText = vi.fn();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+
+    render(<ExchangeLog entries={[ENTRIES[0]!]} />);
+    fireEvent.click(screen.getByRole("button", { name: "Copy as cURL" }));
+
+    expect(writeText).toHaveBeenCalledTimes(1);
+    const cmd = writeText.mock.calls[0]![0] as string;
+    expect(cmd).toContain("curl -X POST 'https://sandbox.straddle.io/v1/charges'");
+    expect(cmd).toContain("Bearer $STRADDLE_API_KEY");
+    expect(cmd).not.toContain("Bearer sk_");
+  });
+
   it("shows the empty state when no exchanges exist", () => {
     render(<ExchangeLog entries={[]} />);
     expect(screen.getByText("No exchanges yet.")).toBeTruthy();
